@@ -207,6 +207,8 @@ describe('Dual-network alerts and price tracking (#188)', () => {
       global.fetch = vi.fn().mockImplementation(async (url: string) => {
         if (url.includes('/trades')) {
           return {
+            ok: true,
+            status: 200,
             json: async () => ({
               _embedded: {
                 records: [

@@ -117,7 +117,9 @@ describe('AMM Ingester', () => {
     expect(record).not.toHaveProperty('ledger')
 
     global.fetch = vi.fn().mockResolvedValue({
-      json: async () => ({ _embedded: { records: [record] } })
+      ok: true,
+      status: 200,
+      json: async () => ({ _embedded: { records: [record] } }),
     })
 
     // Deliberately a network other than the active one: the point of passing
