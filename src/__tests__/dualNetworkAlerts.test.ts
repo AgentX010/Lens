@@ -209,6 +209,7 @@ describe('Dual-network alerts and price tracking (#188)', () => {
           return {
             ok: true,
             status: 200,
+            headers: { get: () => null },
             json: async () => ({
               _embedded: {
                 records: [
