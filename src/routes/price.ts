@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { computeTWAP, computeVWAP } from '../pricing/twap'
 import { z } from 'zod'
+import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
 import { apiError } from '../errors'
@@ -37,6 +38,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
   }>(
     '/price/twap/:assetA/:assetB',
     async (req, reply) => {
+      const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
       const parsed = TwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
@@ -88,6 +90,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
   }>(
     '/price/vwap/:assetA/:assetB',
     async (req, reply) => {
+      const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
       const parsed = VwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {

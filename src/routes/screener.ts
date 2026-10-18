@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { pgPool } from '../db'
 import { activeNetwork } from '../config'
+import { formatValidationError, VALIDATION_ERROR_CODE } from '../validation'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { apiError } from '../errors'
 import {
@@ -18,6 +20,64 @@ import {
 const MARKET_CAP_UNSUPPORTED =
   'market_cap is not supported: Lens has no circulating supply data to compute it from. Use liquidity instead'
 
+/** Machine-readable code for the market_cap rejection (not a validation error). */
+const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
+
+const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as const
+
+const numFilter = (name: string) =>
+  z.coerce.number({ error: `${name} must be a valid number` }).optional()
+
+const ScreenerQuerySchema = z
+  .object({
+    // Historical behavior: limit is clamped to [1, 100], never rejected.
+    // `GET /screener?limit=500` returns 100 rows, `limit=0` behaves as 1.
+    limit: z.coerce
+      .number({ error: 'limit must be a valid integer' })
+      .int({ error: 'limit must be a valid integer' })
+      .default(20)
+      .transform((v) => Math.min(100, Math.max(1, v))),
+    sortBy: z.string().default('volume'),
+    order: z
+      .preprocess(
+        (v) => (typeof v === 'string' ? v.toLowerCase() : v),
+        z.enum(['asc', 'desc'])
+      )
+      .default('desc'),
+    volume: numFilter('volume'),
+    change_24h_min: numFilter('change_24h_min'),
+    change_24h_max: numFilter('change_24h_max'),
+    price_min: numFilter('price_min'),
+    price_max: numFilter('price_max'),
+    liquidity: numFilter('liquidity'),
+    cursor: z.string().optional(),
+    // market_cap is declared only so the rejection below goes through the
+    // shared error formatter like every other rejection.
+    market_cap: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.market_cap !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['market_cap'],
+        message: MARKET_CAP_UNSUPPORTED,
+      })
+    }
+    if (data.sortBy === 'market_cap') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sortBy'],
+        message: MARKET_CAP_UNSUPPORTED,
+      })
+    } else if (!(ALLOWED_SORT_FIELDS as readonly string[]).includes(data.sortBy)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sortBy'],
+        message: `sortBy must be one of: ${ALLOWED_SORT_FIELDS.join(', ')}`,
+      })
+    }
+  })
+
 export async function registerScreenerRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: {
@@ -34,6 +94,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       limit?: string
     }
   }>('/screener', async (req, reply) => {
+    const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query
 
@@ -58,9 +119,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       if (order !== 'asc' && order !== 'desc') {
         return reply.status(400).send(apiError('invalid_parameter', 'order must be asc or desc'))
       }
-
-      // 2. Parse filters
-      const parseNum = (val?: string) => val ? parseFloat(val) : undefined
+      const { limit, sortBy, order, cursor } = parsed.data
       const filters = {
         volume: parseNum(q.volume),
         change_24h_min: parseNum(q.change_24h_min),

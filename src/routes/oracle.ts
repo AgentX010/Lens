@@ -7,16 +7,6 @@ import { apiError } from '../errors'
 
 const oracleAdapters: OracleAdapter[] = [reflectorOracleAdapter]
 
-function deviationPct(lens: number | null, oracle: number | null): number | null {
-  if (lens === null || oracle === null || oracle === 0) return null
-  return parseFloat((Math.abs(oracle - lens) / Math.abs(oracle) * 100).toFixed(4))
-}
-
-function deviationStatus(deviation: number | null): 'aligned' | 'minor_deviation' | 'major_deviation' | 'partial' {
-  if (deviation === null) return 'partial'
-  return deviation < 1 ? 'aligned' : deviation < 5 ? 'minor_deviation' : 'major_deviation'
-}
-
 export async function registerOracleRoutes(
   app: FastifyInstance,
   adapters: OracleAdapter[] = oracleAdapters
@@ -63,32 +53,7 @@ export async function registerOracleRoutes(
       if (lensPrice === null && !anyOracleConfigured) {
         return reply.status(404).send(apiError('unknown_pair', `No price data found for asset ${assetCode}`))
       }
-
-      const oracles = oracleResults.map(result => {
-        const delta = deviationPct(lensPrice, result.quote?.price ?? null)
-        return {
-          name: result.name,
-          price: result.quote?.price ?? null,
-          timestamp: result.quote ? new Date(result.quote.timestamp * 1000).toISOString() : null,
-          deviationPct: delta,
-          status: !result.configured ? 'not_configured' : result.quote ? 'available' : 'unreachable',
-        }
-      })
-      const reflector = oracleResults.find(result => result.name === 'reflector')
-      const reflectorPrice = reflector?.quote?.price ?? null
-      const reflectorDeviation = deviationPct(lensPrice, reflectorPrice)
-
-      return {
-        asset: assetCode,
-        network,
-        lens: lensPrice,
-        // Keep the original fields while clients migrate to the multi-oracle list.
-        reflector: reflectorPrice,
-        deviationPct: reflectorDeviation,
-        status: deviationStatus(reflectorDeviation),
-        fetchedAt: new Date().toISOString(),
-        oracles,
-      }
+      return comparison
     }
   )
 }

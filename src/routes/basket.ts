@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { pgPool } from '../db'
 import { apiError } from '../errors'
 
@@ -17,20 +18,18 @@ async function fetchAssetVWAP(asset: string): Promise<number | null> {
   return parseFloat(vwap)
 }
 
-export async function registerBasketRoutes(app: FastifyInstance) {
-  app.get<{
-    Querystring: { asset?: string | string[]; weight?: string | string[] }
-  }>('/basket', async (req, reply) => {
-    const rawAssets = req.query.asset
-    const rawWeights = req.query.weight
+const toArray = z
+  .union([z.string(), z.array(z.string())])
+  .transform((v) => (Array.isArray(v) ? v : [v]))
 
-    const assets: string[] = rawAssets
-      ? Array.isArray(rawAssets) ? rawAssets : [rawAssets]
-      : []
-    const weightStrings: string[] = rawWeights
-      ? Array.isArray(rawWeights) ? rawWeights : [rawWeights]
-      : []
-
+const BasketQuerySchema = z
+  .object({
+    asset: toArray.optional(),
+    weight: toArray.optional(),
+  })
+  .superRefine((data, ctx) => {
+    const assets = data.asset ?? []
+    const weightStrings = data.weight ?? []
     if (assets.length === 0) {
       return reply.status(400).send(apiError('missing_parameter', 'At least one asset is required'))
     }
@@ -40,16 +39,21 @@ export async function registerBasketRoutes(app: FastifyInstance) {
     if (assets.length !== weightStrings.length) {
       return reply.status(400).send(apiError('invalid_parameter', 'Number of assets and weights must match'))
     }
+  })
 
     const rawWeightValues = weightStrings.map(w => parseFloat(w))
     if (rawWeightValues.some(w => isNaN(w) || w <= 0)) {
       return reply.status(400).send(apiError('invalid_parameter', 'All weights must be positive numbers'))
     }
+    const assets = parsed.data.asset ?? []
+    const weightStrings = parsed.data.weight ?? []
+
+    const rawWeightValues = weightStrings.map((w) => parseFloat(w))
 
     const weightSum = rawWeightValues.reduce((a, b) => a + b, 0)
-    const normalizedWeights = rawWeightValues.map(w => w / weightSum)
+    const normalizedWeights = rawWeightValues.map((w) => w / weightSum)
 
-    const prices = await Promise.all(assets.map(a => fetchAssetVWAP(a)))
+    const prices = await Promise.all(assets.map((a) => fetchAssetVWAP(a)))
 
     const components = assets.map((asset, i) => ({
       asset: asset.toUpperCase(),
@@ -57,7 +61,7 @@ export async function registerBasketRoutes(app: FastifyInstance) {
       weight: normalizedWeights[i],
     }))
 
-    const missingAssets = components.filter(c => c.price === null).map(c => c.asset)
+    const missingAssets = components.filter((c) => c.price === null).map((c) => c.asset)
     if (missingAssets.length > 0) {
       return reply.status(404).send(apiError('unknown_pair', `No price data found for: ${missingAssets.join(', ')}`))
     }
@@ -69,7 +73,7 @@ export async function registerBasketRoutes(app: FastifyInstance) {
 
     return {
       basketPrice,
-      components: components.map(c => ({
+      components: components.map((c) => ({
         asset: c.asset,
         price: c.price as number,
         weight: parseFloat(c.weight.toFixed(8)),
