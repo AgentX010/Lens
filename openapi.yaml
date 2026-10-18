@@ -29,6 +29,9 @@ paths:
       responses:
         '200':
           description: API status
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -79,6 +82,9 @@ paths:
       responses:
         '200':
           description: Aggregated price data
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -117,6 +123,9 @@ paths:
       responses:
         '200':
           description: Best route information
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -160,6 +169,9 @@ paths:
       responses:
         '200':
           description: Price history
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -192,6 +204,9 @@ paths:
       responses:
         '200':
           description: List of pools
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -263,6 +278,9 @@ paths:
       responses:
         '200':
           description: Candle data
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -352,6 +370,9 @@ paths:
       responses:
         '200':
           description: Historical price snapshots
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             text/csv:
               schema:
@@ -405,6 +426,9 @@ paths:
       responses:
         '200':
           description: List of pairs
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -492,6 +516,9 @@ paths:
       responses:
         '200':
           description: Depth ladder
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -551,6 +578,9 @@ paths:
       responses:
         '200':
           description: TWAP result
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -607,6 +637,9 @@ paths:
       responses:
         '200':
           description: VWAP result
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -646,6 +679,9 @@ paths:
       responses:
         '200':
           description: Aggregated volume
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -685,6 +721,9 @@ paths:
       responses:
         '200':
           description: Per-venue spreads
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -712,6 +751,9 @@ paths:
       responses:
         '200':
           description: Price comparison
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -789,6 +831,9 @@ paths:
       responses:
         '200':
           description: Screened pairs
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -821,6 +866,9 @@ paths:
       responses:
         '200':
           description: Benchmark statistics
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -863,6 +911,9 @@ paths:
       responses:
         '200':
           description: Basket price
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -924,6 +975,9 @@ paths:
       responses:
         '200':
           description: Paginated catalog page
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -1001,6 +1055,9 @@ paths:
       responses:
         '200':
           description: Usage summary for the authenticated key
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -1018,6 +1075,9 @@ paths:
       responses:
         '200':
           description: Supported payment kinds and extensions
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -1108,6 +1168,9 @@ paths:
       responses:
         '200':
           description: GraphQL result
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
           content:
             application/json:
               schema:
@@ -1225,6 +1288,19 @@ components:
                 type: string
               retryAfter:
                 type: string
+
+  headers:
+    CacheControl:
+      description: >-
+        Per-route cache policy (see "Cache policy" in the API description).
+        Every route sends a deliberate `Cache-Control`: live prices
+        `public, max-age=30`; aggregates `public, max-age=60`; `/pairs` and
+        `/pools` `public, max-age=300`; closed candle windows
+        `public, max-age=86400`; per-caller, operator and error responses
+        `no-store`.
+      schema:
+        type: string
+        example: 'public, max-age=300'
 
   schemas:
     Asset:
@@ -1370,6 +1446,107 @@ components:
         source:
           type: string
           enum: [AMM, SDEX, BOTH]
+
+    BookLevel:
+      type: object
+      required: [price, size, cumulativeSize, venues, synthetic, sampleCount]
+      additionalProperties: false
+      properties:
+        price:
+          type: number
+          description: Quote-asset units per base-asset unit.
+        size:
+          type: number
+          description: Base-asset size at this level.
+        cumulativeSize:
+          type: number
+          description: Base-asset size from the best price through this level, independently for asks and bids.
+        venues:
+          type: array
+          items:
+            type: string
+          description: SDEX for order-book levels or AMM:{poolId} for each contributing pool.
+        synthetic:
+          type: boolean
+          description: True for reserve-derived AMM steps; false for observed SDEX book levels.
+        sampleCount:
+          type: integer
+          description: Number of source levels combined at this price.
+
+    BookSource:
+      type: object
+      required: [venue, status, sampleCount, observedAt, dataAgeSeconds, truncated]
+      additionalProperties: false
+      properties:
+        venue:
+          type: string
+        status:
+          type: string
+          enum: [available, no_liquidity, unavailable]
+        sampleCount:
+          type: integer
+          description: SDEX book levels returned, or latest AMM pool snapshots used.
+        observedAt:
+          type: string
+          format: date-time
+          nullable: true
+        dataAgeSeconds:
+          type: number
+          nullable: true
+        truncated:
+          type: boolean
+          description: True when the SDEX response reached the 200-level per-side request limit.
+
+    BookResponse:
+      type: object
+      required: [assetA, assetB, pairKey, network, spotPrice, spotSource, depth, step, status, asks, bids, provenance]
+      additionalProperties: false
+      properties:
+        assetA:
+          type: string
+        assetB:
+          type: string
+        pairKey:
+          type: string
+        network:
+          type: string
+          enum: [testnet, mainnet]
+        spotPrice:
+          type: number
+          nullable: true
+        spotSource:
+          type: string
+          nullable: true
+          enum: [SDEX_MID, SDEX_ASK, SDEX_BID, AMM_RESERVES, null]
+        depth:
+          type: number
+        step:
+          type: number
+        status:
+          type: string
+          enum: [ok, partial, no_liquidity, no_levels_in_range, unavailable]
+        asks:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookLevel'
+        bids:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookLevel'
+        provenance:
+          type: object
+          required: [sampledAt, sampleCount, venues]
+          additionalProperties: false
+          properties:
+            sampledAt:
+              type: string
+              format: date-time
+            sampleCount:
+              type: integer
+            venues:
+              type: array
+              items:
+                $ref: '#/components/schemas/BookSource'
 
     TwapResponse:
       type: object
@@ -1548,7 +1725,7 @@ components:
           description: One result per configured adapter; unavailable sources remain present with a status.
           items:
             type: object
-            required: [name, price, timestamp, deviationPct, status]
+            required: [name, price, timestamp, deviationPct, status, ageSeconds]
             additionalProperties: false
             properties:
               name:
@@ -1565,7 +1742,11 @@ components:
                 nullable: true
               status:
                 type: string
-                enum: [available, unreachable, not_configured]
+                description: unreachable means the adapter failed; empty means it is configured but returned no quote.
+                enum: [available, unreachable, empty, not_configured]
+              ageSeconds:
+                type: integer
+                nullable: true
 
     ScreenerRow:
       type: object
