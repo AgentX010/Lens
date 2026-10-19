@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
-import { api_key_auth_failures_total } from '../metrics'
+import { api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
 
 type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired'
 
@@ -22,8 +22,12 @@ declare module 'fastify' {
     apiKey?: ApiKeyContext
   }
   interface FastifyContextConfig {
-    /** When true, the API-key auth hook skips this route (e.g. health, admin). */
+    /** When true, this route is genuinely public and requires no authentication (e.g. health probes). */
     public?: boolean
+    /** When true, this route is an operator-only admin route guarded by ADMIN_TOKEN. */
+    admin?: boolean
+    /** Semantic authentication classification. */
+    auth?: 'none' | 'api-key' | 'admin'
   }
 }
 
@@ -107,9 +111,15 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
   app.decorateRequest('apiKey', undefined)
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Allow routes to mark themselves public (no auth required).
-    const routeConfig = (req.routeOptions?.config ?? {}) as { public?: boolean }
-    if (routeConfig.public) return
+    const routeConfig = (req.routeOptions?.config ?? {}) as {
+      public?: boolean
+      admin?: boolean
+      auth?: 'none' | 'api-key' | 'admin'
+    }
+    const url = req.url.split('?')[0]
+    const isAdmin = routeConfig.admin || routeConfig.auth === 'admin' || url.startsWith('/admin')
+    const isPublic = routeConfig.public || routeConfig.auth === 'none'
+    if (isPublic || isAdmin) return
 
     const authorization = req.headers['authorization']
     const token = extractBearer(authorization)
@@ -161,3 +171,36 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
 }
 
 export const registerApiKeyAuth = fp(apiKeyAuthPlugin, { name: 'api-key-auth' })
+
+/**
+ * Fastify plugin that structurally guards every operator-only admin endpoint.
+ *
+ * Runs as an onRequest hook and intercepts:
+ * 1. Any route starting with `/admin` (e.g. `/admin/keys`, `/admin/usage`)
+ * 2. Any route declaring `config: { admin: true }` or `config: { auth: 'admin' }`
+ *
+ * Guarantees that any new route added under `/admin` is automatically protected
+ * by default, without relying on individual handler implementations.
+ */
+async function adminAuthHookPlugin(app: FastifyInstance) {
+  app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    const routeConfig = (req.routeOptions?.config ?? {}) as {
+      admin?: boolean
+      auth?: 'none' | 'api-key' | 'admin'
+    }
+    const url = req.url.split('?')[0]
+    const isAdmin = routeConfig.admin || routeConfig.auth === 'admin' || url.startsWith('/admin')
+    if (!isAdmin) return
+
+    if (!isAdminAuthorized(req)) {
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide a valid X-Admin-Token header.',
+      })
+    }
+  })
+}
+
+export const registerAdminAuth = fp(adminAuthHookPlugin, { name: 'admin-auth-hook' })

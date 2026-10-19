@@ -13,7 +13,7 @@ import { registerX402 } from './middleware/x402'
 import { registerNetworkSelector } from './middleware/network'
 import { registerHttpMetrics } from './middleware/httpMetrics'
 import { registerWebSocket } from './api/websocket'
-import { registerApiKeyAuth } from './api/auth'
+import { registerApiKeyAuth, registerAdminAuth } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
 import { registerUsageRoutes } from './api/usage'
 import { registerFacilitatorRoutes } from './api/facilitator'
@@ -104,6 +104,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   } else {
     app.log.warn('[auth] REQUIRE_API_KEY=false — API key authentication disabled')
   }
+
+  // Structural admin authentication hook: intercepts every /admin/* route and
+  // ensures ADMIN_TOKEN is enforced without requiring per-handler manual guards.
+  await app.register(registerAdminAuth)
 
   // Per-key rate quotas: the limit is derived from the authenticated key's
   // metadata (req.apiKey, set by the auth hook above). Unauthenticated/public

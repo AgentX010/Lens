@@ -31,7 +31,7 @@ interface CreateKeyBody {
 export async function registerAdminRoutes(app: FastifyInstance) {
   app.post<{ Body: CreateKeyBody }>(
     '/admin/keys',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Body: CreateKeyBody }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
@@ -86,7 +86,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>(
     '/admin/keys/:id',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
