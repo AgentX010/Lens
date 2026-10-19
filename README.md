@@ -99,6 +99,7 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/v1/status` | Get API status and indexer state |
 | GET | `/v1/snapshot` | Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness) |
 | GET | `/v1/price/:assetA/:assetB` | Get aggregated price for a pair |
+| GET | `/v1/premium/:assetA/:assetB` | Get on-chain vs CEX price premium and spread |
 | GET | `/v1/price/:assetA/:assetB/route` | Get best swap route for a pair and amount |
 | GET | `/v1/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
 | GET | `/v1/price/:assetA/:assetB/history` | Get price history buckets |

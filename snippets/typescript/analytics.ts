@@ -18,6 +18,15 @@ const BASE_URL = requireEnv('LENS_BASE_URL')
   console.log("getTvl", res.status, await res.json())
 }
 
+// getPremium: GET /v1/premium/XLM/USDC
+{
+  const url = new URL("/v1/premium/XLM/USDC", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getPremium", res.status, await res.json())
+}
+
 // getVolumes: GET /v1/volumes/XLM
 {
   const url = new URL("/v1/volumes/XLM", BASE_URL)

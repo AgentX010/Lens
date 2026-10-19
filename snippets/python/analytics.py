@@ -17,6 +17,10 @@ BASE_URL = require_env("LENS_BASE_URL")
 res = requests.get(BASE_URL + "/v1/tvl", params=[["network","testnet"]], headers={}, timeout=30)
 print("getTvl", res.status_code, res.json())
 
+# getPremium: GET /v1/premium/XLM/USDC
+res = requests.get(BASE_URL + "/v1/premium/XLM/USDC", params=[["network","testnet"]], headers={}, timeout=30)
+print("getPremium", res.status_code, res.json())
+
 # getVolumes: GET /v1/volumes/XLM
 res = requests.get(BASE_URL + "/v1/volumes/XLM", params=[["network","testnet"]], headers={}, timeout=30)
 print("getVolumes", res.status_code, res.json())

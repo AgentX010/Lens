@@ -599,6 +599,11 @@ const globalConfig = {
     minPrice: parseFloat(process.env.PRICE_MIN_PLAUSIBLE ?? '0.0000000001'),
     maxPrice: parseFloat(process.env.PRICE_MAX_PLAUSIBLE ?? '10000000000'),
   },
+  premium: {
+    get stalenessSeconds() {
+      return parseInt(process.env.PREMIUM_STALENESS_SECONDS ?? '60', 10)
+    },
+  },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
@@ -722,6 +727,7 @@ export const config = {
   publisher: globalConfig.publisher,
   cache:   globalConfig.cache,
   plausibility: globalConfig.plausibility,
+  premium: globalConfig.premium,
   http:    globalConfig.http,
   reconciliation: globalConfig.reconciliation,
   ws:      globalConfig.ws,

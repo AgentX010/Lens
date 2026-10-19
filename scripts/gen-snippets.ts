@@ -17,7 +17,7 @@ const GROUPS: { name: string; prefixes: string[] }[] = [
     name: 'analytics',
     prefixes: [
       '/volumes', '/spreads', '/compare', '/screener', '/benchmark', '/basket',
-      '/tvl', '/rates', '/dispersion', '/movers', '/correlation',
+      '/tvl', '/rates', '/dispersion', '/movers', '/correlation', '/premium',
     ],
   },
   { name: 'service', prefixes: ['/status', '/supported', '/discovery', '/usage', '/venues', '/snapshot'] },

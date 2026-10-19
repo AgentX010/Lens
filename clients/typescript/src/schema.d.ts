@@ -161,6 +161,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/premium/{assetA}/{assetB}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get on-chain vs CEX price premium and spread
+         * @description Returns the on-chain price, the best CEX price, the spread in basis points, both sources, and both timestamps. Refuses to answer with a 400 when either side is older than the configured staleness bound.
+         */
+        get: operations["getPremium"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/price/{assetA}/{assetB}/route": {
         parameters: {
             query?: never;
@@ -1606,6 +1626,29 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        PremiumPricePoint: {
+            price: number;
+            source: string;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        PremiumResponse: {
+            assetA: string;
+            assetB: string;
+            network: string;
+            onChain: components["schemas"]["PremiumPricePoint"];
+            cex: components["schemas"]["PremiumPricePoint"];
+            spreadBps: number;
+        };
+        PremiumErrorResponse: {
+            error: string;
+            code?: string;
+            /** @enum {string} */
+            stale?: "onChain" | "cex" | "both";
+            ageSeconds?: number | null;
+            onChainAgeSeconds?: number | null;
+            cexAgeSeconds?: number | null;
+        };
     };
     responses: {
         /** @description Payment Required */
@@ -1997,6 +2040,57 @@ export interface operations {
                 content?: never;
             };
             429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getPremium: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+            };
+            header?: never;
+            path: {
+                /** @example XLM */
+                assetA: string;
+                /** @example USDC */
+                assetB: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Premium and spread calculation */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PremiumResponse"];
+                };
+            };
+            /** @description Stale price data or unrecognised network */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PremiumErrorResponse"];
+                };
+            };
+            429: components["responses"]["TooManyRequests"];
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        code: string;
+                    };
+                };
+            };
         };
     };
     getBestRoute: {
