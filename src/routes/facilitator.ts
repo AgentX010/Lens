@@ -147,36 +147,107 @@ function isUniqueViolation(err: unknown): boolean {
  * payment to accept one.
  */
 export async function registerSettleRoute(app: FastifyInstance) {
-  app.post('/settle', { config: { public: true } }, async (req: FastifyRequest, reply: FastifyReply) => {
-    const body = (req.body ?? {}) as SettleRequestBody
+  app.post(
+    '/settle',
+    {
+      config: {
+        public: true,
+        rateLimit: {
+          max: 30,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const body = (req.body ?? {}) as SettleRequestBody
 
-    const caip2 = typeof body.paymentRequirements?.network === 'string' ? body.paymentRequirements.network : ''
-    const network = NETWORK_BY_CAIP2[caip2]
-    const transactionXdr = body.paymentPayload?.payload?.transaction
+      const caip2 = typeof body.paymentRequirements?.network === 'string' ? body.paymentRequirements.network : ''
+      const network = NETWORK_BY_CAIP2[caip2]
+      const transactionXdr = body.paymentPayload?.payload?.transaction
 
-    if (!network || typeof transactionXdr !== 'string' || transactionXdr.length === 0) {
-      // The body keeps the SettleResponse shape even at 400, so an unmodified
-      // canonical client can still read it instead of seeing a transport error.
-      return reply
-        .code(400)
-        .send(
+      if (!network || typeof transactionXdr !== 'string' || transactionXdr.length === 0) {
+        // The body keeps the SettleResponse shape even at 400, so an unmodified
+        // canonical client can still read it instead of seeing a transport error.
+        return reply
+          .code(400)
+          .send(
+            settleFailure(
+              '',
+              caip2,
+              SETTLE_ERROR_REASONS.malformed,
+              'Request must carry paymentRequirements.network and paymentPayload.payload.transaction.',
+            ),
+          )
+      }
+
+      const txHash = deriveIdempotencyKey(transactionXdr, network)
+      if (!txHash) {
+        return reply
+          .code(400)
+          .send(
+            settleFailure('', caip2, SETTLE_ERROR_REASONS.malformed, 'paymentPayload.payload.transaction is not a transaction envelope.'),
+          )
+      }
+
+      // ── Spend ceiling check (#147) ──────────────────────────────────────────
+      const spendCeiling = parseFloat(process.env.FACILITATOR_SPEND_CEILING ?? '0')
+      const requestedAmount = parseFloat(typeof body.paymentRequirements?.amount === 'string' ? body.paymentRequirements.amount : '0')
+      if (spendCeiling > 0 && requestedAmount > spendCeiling) {
+        req.log.warn({ requestedAmount, spendCeiling, network }, '[facilitator] Settlement amount exceeds spend ceiling')
+        return reply.code(400).send(
           settleFailure(
-            '',
+            txHash,
             caip2,
-            SETTLE_ERROR_REASONS.malformed,
-            'Request must carry paymentRequirements.network and paymentPayload.payload.transaction.',
+            'spend_ceiling_exceeded',
+            `Payment amount ${requestedAmount} exceeds facilitator spend ceiling of ${spendCeiling}.`,
           ),
         )
-    }
+      }
 
-    const txHash = deriveIdempotencyKey(transactionXdr, network)
-    if (!txHash) {
-      return reply
-        .code(400)
-        .send(
-          settleFailure('', caip2, SETTLE_ERROR_REASONS.malformed, 'paymentPayload.payload.transaction is not a transaction envelope.'),
-        )
-    }
+      // ── Daily ceiling per network (#147) ───────────────────────────────────
+      const dailyCeilingVar = network === 'mainnet' ? 'FACILITATOR_DAILY_CEILING_MAINNET' : 'FACILITATOR_DAILY_CEILING_TESTNET'
+      const dailyCeiling = parseFloat(process.env[dailyCeilingVar] ?? '0')
+      if (dailyCeiling > 0) {
+        const startOfDay = new Date()
+        startOfDay.setUTCHours(0, 0, 0, 0)
+        const dailyCount = await prisma.settlementAttempt.count({
+          where: {
+            network,
+            state: 'settled',
+            createdAt: { gte: startOfDay },
+          },
+        })
+        if (dailyCount >= dailyCeiling) {
+          req.log.error({ dailyCount, dailyCeiling, network }, '[facilitator] Daily settlement limit reached for network')
+          return reply.code(429).send(
+            settleFailure(
+              txHash,
+              caip2,
+              'daily_spend_ceiling_exceeded',
+              `Daily settlement limit of ${dailyCeiling} reached for network ${network}.`,
+            ),
+          )
+        }
+      }
+
+      // ── Caller allow-list check (#147) ──────────────────────────────────────
+      const allowlist = process.env.FACILITATOR_CALLER_ALLOWLIST ?? process.env.FACILITATOR_ALLOWED_ORIGINS
+      if (allowlist && allowlist.trim() !== '') {
+        const allowed = allowlist.split(',').map((s) => s.trim().toLowerCase())
+        const payTo = String(body.paymentRequirements?.payTo ?? '').toLowerCase()
+        const origin = String(req.headers['origin'] ?? req.headers['x-caller-id'] ?? '').toLowerCase()
+        if (!allowed.includes(payTo) && !allowed.includes(origin)) {
+          req.log.warn({ payTo, origin, allowed }, '[facilitator] Caller or destination not on allow-list')
+          return reply.code(403).send(
+            settleFailure(
+              txHash,
+              caip2,
+              'caller_not_allowed',
+              'Caller or recipient is not on the facilitator allow-list.',
+            ),
+          )
+        }
+      }
 
     const facilitator = getFacilitator(network)
     if (!facilitator) {

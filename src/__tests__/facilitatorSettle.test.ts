@@ -10,11 +10,12 @@ import {
 } from '@stellar/stellar-sdk'
 import * as catalogModule from '../bazaar/catalog'
 
-const { mockCreate, mockFindUnique, mockUpdate, mockGetFacilitator, mockSettle, mockGetTransaction } = vi.hoisted(
+const { mockCreate, mockFindUnique, mockUpdate, mockCount, mockGetFacilitator, mockSettle, mockGetTransaction } = vi.hoisted(
   () => ({
     mockCreate: vi.fn(),
     mockFindUnique: vi.fn(),
     mockUpdate: vi.fn(),
+    mockCount: vi.fn(),
     mockGetFacilitator: vi.fn(),
     mockSettle: vi.fn(),
     mockGetTransaction: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('../db', () => ({
       create: mockCreate,
       findUnique: mockFindUnique,
       update: mockUpdate,
+      count: mockCount,
     },
   },
 }))
@@ -116,6 +118,7 @@ beforeEach(() => {
   })
   mockGetFacilitator.mockReset().mockReturnValue({ settle: mockSettle })
   mockGetTransaction.mockReset()
+  mockCount.mockReset().mockResolvedValue(0)
 })
 
 describe('POST /settle', () => {
@@ -428,3 +431,127 @@ describe('deriveIdempotencyKey', () => {
     expect(deriveIdempotencyKey('not-xdr', 'testnet')).toBeNull()
   })
 })
+
+describe('Hardened x402 Facilitator Controls (#147)', () => {
+  afterEach(() => {
+    delete process.env.FACILITATOR_SPEND_CEILING
+    delete process.env.FACILITATOR_DAILY_CEILING_TESTNET
+    delete process.env.FACILITATOR_DAILY_CEILING_MAINNET
+    delete process.env.FACILITATOR_CALLER_ALLOWLIST
+    delete process.env.FACILITATOR_ALLOWED_ORIGINS
+  })
+
+  it('rejects settlements exceeding per-settlement spend ceiling before submission', async () => {
+    process.env.FACILITATOR_SPEND_CEILING = '50'
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody({ amount: '100' }),
+    })
+
+    expect(res.statusCode).toBe(400)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('spend_ceiling_exceeded')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('enforces rolling daily settlement ceiling per network', async () => {
+    process.env.FACILITATOR_DAILY_CEILING_TESTNET = '5'
+    mockCount.mockResolvedValueOnce(5) // Daily ceiling already reached
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(429)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('daily_spend_ceiling_exceeded')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('allows settlement when within daily ceiling', async () => {
+    process.env.FACILITATOR_DAILY_CEILING_TESTNET = '10'
+    mockCount.mockResolvedValueOnce(3)
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockSettle).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses callers not on the allowlist when allowlist is configured', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'GALLOWEDPAYEE,https://trusted-merchant.com'
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      headers: {
+        'x-caller-id': 'https://untrusted-attacker.com',
+      },
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(403)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('caller_not_allowed')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('permits callers on the allowlist when configured', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'GALLOWEDPAYEE,https://trusted-merchant.com'
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      headers: {
+        origin: 'https://trusted-merchant.com',
+      },
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockSettle).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaying an identical settle returns the stored answer and submits exactly once', async () => {
+    // Unique violation triggers the idempotency duplicate detection
+    mockCreate.mockRejectedValueOnce(uniqueViolation())
+    mockFindUnique.mockResolvedValueOnce({
+      state: 'settled',
+      response: {
+        success: true,
+        transaction: 'already-settled-hash',
+        network: 'stellar:testnet',
+      },
+    })
+    const app = await buildApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.success).toBe(true)
+    expect(body.transaction).toBe('already-settled-hash')
+    expect(mockSettle).toHaveBeenCalledTimes(0) // Exactly zero re-submissions!
+  })
+})
+
