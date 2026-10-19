@@ -270,6 +270,12 @@ const globalConfig = {
   cache: {
     priceTtl: parseInt(process.env.PRICE_CACHE_TTL ?? '10', 10),
   },
+  pricing: {
+    staleThresholdSeconds: parseInt(
+      process.env.PRICE_STALE_THRESHOLD_SECONDS ?? process.env.STALENESS_BOUND_SECONDS ?? '300',
+      10
+    ),
+  },
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
@@ -360,6 +366,7 @@ export const config = {
   api:     globalConfig.api,
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
+  pricing: globalConfig.pricing,
   http:    globalConfig.http,
   outbound: globalConfig.outbound,
 }
