@@ -1,5 +1,5 @@
 import { pgPool } from '../db'
-import { getPoolFee, PoolFeeOptions } from './pool-fee'
+import { activeNetwork, NetworkName } from '../config'
 
 export interface DepthLevel {
   price: number
@@ -46,15 +46,36 @@ export function calculateAMMOutput(reserveA: number, reserveB: number, amount: n
   return (reserveB * effectiveInput) / (reserveA + effectiveInput)
 }
 
+/**
+ * Calculates execution price per unit of input:
+ * executionPrice = dy / dx
+ */
 export function calculateAMMPrice(reserveA: number, reserveB: number, amount: number, feeBp: number): number {
+  if (amount <= 0) return 0
   const output = calculateAMMOutput(reserveA, reserveB, amount, feeBp)
   return output / amount
 }
 
+/**
+ * Calculates spot price from reserves:
+ * spotPrice = reserveB / reserveA
+ */
 export function calculateAMMSpotPrice(reserveA: number, reserveB: number): number {
   return reserveA > 0 ? reserveB / reserveA : 0
 }
 
+/**
+ * Calculates percentage slippage between spot price and execution price:
+ * slippagePct = |executionPrice - spotPrice| / spotPrice * 100
+ */
+export function calculateSlippage(spotPrice: number, executionPrice: number): number {
+  if (spotPrice <= 0) return 0
+  return Math.abs((executionPrice - spotPrice) / spotPrice) * 100
+}
+
+/**
+ * Generates discrete depth levels for constant-product pool order book simulation.
+ */
 export function generateAMMDepthLevels(
   reserveA: number,
   reserveB: number,
