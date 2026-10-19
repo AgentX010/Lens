@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { ssrfSafeFetch, SsrfError, type SsrfFetchOptions } from '../net/ssrf.js';
 
 export interface McpServerConfig {
-  fetchWithPayment: typeof fetch;
+  fetchWithPayment?: typeof fetch;
   /**
    * Origins (or URL prefixes) `paid_call` may pay for. Operator configuration,
    * never a tool argument: an empty or absent list — the default — means
@@ -32,7 +32,7 @@ export interface McpServerConfig {
 
 export class BazaarMcpServer {
   private server: Server;
-  private fetchWithPayment: typeof fetch;
+  private fetchWithPayment?: typeof fetch;
   private paidCallRules: PaidCallAllowRule[];
   private bazaarFetchOptions: SsrfFetchOptions;
   private priceQueries?: LensPriceQueries;
@@ -192,6 +192,13 @@ export class BazaarMcpServer {
       }
 
       if (request.params.name === 'paid_call') {
+        if (!this.fetchWithPayment) {
+          return this.createErrorResponse(
+            'ERR_PAYMENT_REJECTED',
+            'paid_call is disabled: no payment keys configured on this server.'
+          );
+        }
+
         const url = String(request.params.arguments?.url);
         const method = request.params.arguments?.method ? String(request.params.arguments?.method) : 'GET';
 
@@ -245,6 +252,15 @@ export class BazaarMcpServer {
     
     if (msg.includes('insufficient') || msg.includes('underfunded')) {
       return this.createErrorResponse('ERR_INSUFFICIENT_BALANCE', 'Insufficient balance to complete the payment.');
+    }
+
+    if (
+      msg.includes('no network/scheme registered') ||
+      msg.includes('no scheme registered') ||
+      msg.includes('missing key') ||
+      msg.includes('not configured for network')
+    ) {
+      return this.createErrorResponse('ERR_PAYMENT_REJECTED', e.message || 'No payment signer configured for the required network.');
     }
 
     if (msg.includes('fetch') || msg.includes('network')) {
