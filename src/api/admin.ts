@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { randomBytes, timingSafeEqual } from 'crypto'
+import { randomBytes } from 'crypto'
 import { prisma } from '../db'
 import { hashApiKey } from './auth'
 import { apiError } from '../errors'
@@ -9,26 +9,9 @@ export function generateApiKey(): string {
   return `lens_${randomBytes(24).toString('hex')}`
 }
 
-/**
- * Guards admin routes with a shared secret supplied via the `ADMIN_TOKEN`
- * env var, sent as `X-Admin-Token` (or `Authorization: Bearer <token>`).
- * Returns true if the caller is authorized.
- */
-function isAdminAuthorized(req: FastifyRequest): boolean {
-  const adminToken = process.env.ADMIN_TOKEN
-  if (!adminToken) return false
-  const supplied =
-    (req.headers['x-admin-token'] as string | undefined) ??
-    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
-  if (!supplied) return false
-  const a = Buffer.from(supplied)
-  const b = Buffer.from(adminToken)
-  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
-  return a.length === b.length && timingSafeEqual(a, b)
-}
-
 interface CreateKeyBody {
   label?: string
+  expiresAt?: string
   ratePerMin?: number
   ratePerDay?: number
   monthlyQuotaCents?: number
@@ -57,9 +40,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
          })
        }
 
-      const { label, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
+      const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
       if (!label || typeof label !== 'string' || label.trim().length === 0) {
         return reply.status(400).send(apiError('missing_parameter', 'label is required'))
+      }
+      if (expiresAt !== undefined && typeof expiresAt !== 'string') {
+        return reply.status(400).send({ error: 'expiresAt must be a valid future date' })
+      }
+      const expiration = expiresAt === undefined ? undefined : new Date(expiresAt)
+      if (expiration && (!Number.isFinite(expiration.getTime()) || expiration <= new Date())) {
+        return reply.status(400).send({ error: 'expiresAt must be a valid future date' })
       }
 
       // Generate the key, store only its hash, and return the plaintext once.
@@ -68,6 +58,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         data: {
           hash: hashApiKey(plaintext),
           label: label.trim(),
+          ...(expiration ? { expiresAt: expiration } : {}),
           ...(ratePerMin !== undefined ? { ratePerMin } : {}),
           ...(ratePerDay !== undefined ? { ratePerDay } : {}),
           ...(monthlyQuotaCents !== undefined ? { monthlyQuotaCents } : {}),
@@ -79,6 +70,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         id: record.id,
         label: record.label,
+        expiresAt: record.expiresAt,
         ratePerMin: record.ratePerMin,
         ratePerDay: record.ratePerDay,
         monthlyQuotaCents: record.monthlyQuotaCents,
