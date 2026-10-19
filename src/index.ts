@@ -29,8 +29,12 @@ const log = createLogger('startup')
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
-  log.info('running database migrations')
-  execSync('node node_modules/prisma/build/index.js db push --accept-data-loss', { stdio: 'inherit' })
+  // #233: apply committed, reviewable migrations — never `db push`. `migrate
+  // deploy` only runs migrations already in prisma/migrations and fails loudly
+  // if the DB is ahead of them, instead of silently diffing the live schema and
+  // applying whatever it decides. See docs/database-migrations.md.
+  log.info('applying committed database migrations')
+  execSync('node node_modules/prisma/build/index.js migrate deploy', { stdio: 'inherit' })
   log.info('database ready')
 
   // ── Connect dependencies ──────────────────────────────────────────────────

@@ -380,8 +380,8 @@ npm install
 # 3. Copy env
 cp .env.example .env
 
-# 4. Push database schema
-npm run db:push
+# 4. Apply database migrations
+npm run db:deploy
 
 # 5. Seed the database with fixture data
 npm run seed

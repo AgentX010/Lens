@@ -1,0 +1,131 @@
+import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+
+/**
+ * #233 — There is no migration history, only `db push`.
+ *
+ * The defect this guards against is invisible to every other test in the repo:
+ * `prisma/` shipped only `schema.prisma`, and every schema change was applied
+ * with `prisma db push`, which diffs the live DB against the schema and applies
+ * whatever it decides. Nothing in the codebase could detect a schema that had
+ * drifted away from any committed, reviewable migration.
+ *
+ * These tests are the "fails first" proof. Before adoption `prisma/migrations`
+ * does not exist, so `has a committed migration history` fails; the moment the
+ * baseline lands it passes. The drift test then locks `schema.prisma` and the
+ * baseline together: edit the schema without regenerating a migration and the
+ * two diverge, exactly the failure mode #233 exists to prevent.
+ *
+ * They are deliberately DB-free: they only run
+ * `prisma migrate diff --from-empty --to-schema-datamodel`, which reads the
+ * schema file and never opens a connection, so they run inside plain `npm test`
+ * and the CI build job with no Postgres present. The general, multi-migration
+ * drift guard (replaying every migration against a real database) lives in the
+ * `db-migration-drift` CI job and scripts/db-drift-check.sh, both of which need
+ * a live database.
+ */
+
+const repoRoot = fileURLToPath(new URL('../', import.meta.url))
+const migrationsDir = join(repoRoot, 'prisma', 'migrations')
+const schemaFile = join(repoRoot, 'prisma', 'schema.prisma')
+
+/** Prisma's engines need the datasource env vars defined, but
+ *  `--from-empty --to-schema-datamodel` never connects, so point them at a
+ *  closed port: if the command ever *did* try to reach the DB it fails loudly
+ *  instead of silently touching someone's real database. */
+const OFFLINE_ENV = {
+  DATABASE_URL: 'postgresql://off:off@127.0.0.1:1/off',
+  DIRECT_DATABASE_URL: 'postgresql://off:off@127.0.0.1:1/off',
+  PRISMA_HIDE_UPDATE_MESSAGE: '1',
+  CHECKPOINT_DISABLE: '1',
+}
+
+function prismaMigrateDiffToSchemaScript(): string {
+  return execFileSync(
+    'node',
+    [
+      'node_modules/prisma/build/index.js',
+      'migrate',
+      'diff',
+      '--from-empty',
+      '--to-schema-datamodel',
+      schemaFile,
+      '--script',
+    ],
+    { cwd: repoRoot, env: { ...process.env, ...OFFLINE_ENV }, encoding: 'utf8' },
+  )
+}
+
+/** Migration folders, in the order Prisma would replay them (sorted). */
+function committedMigrations(): string[] {
+  if (!existsSync(migrationsDir)) return []
+  return readdirSync(migrationsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(migrationsDir, e.name, 'migration.sql')))
+    .map((e) => e.name)
+    .sort()
+}
+
+function readMigrationSql(name: string): string {
+  return readFileSync(join(migrationsDir, name, 'migration.sql'), 'utf8')
+}
+
+/** Reduce a migration script to its meaningful DDL: drop `--` comment banners
+ *  and blank lines, trim trailing whitespace so formatting differences that
+ *  carry no schema meaning do not masquerade as drift. */
+function normalizeSql(sql: string): string {
+  return sql
+    .split('\n')
+    .map((line) => line.replace(/\s+$/, ''))
+    .filter((line) => line.trim() !== '' && !line.trim().startsWith('--'))
+    .join('\n')
+    .trim()
+}
+
+describe('#233 Prisma migration history replaces db push', () => {
+  it('has a committed migration history (fails while the repo only db-pushes)', () => {
+    expect(existsSync(migrationsDir), 'prisma/migrations/ must exist — schema changes must be reviewable').toBe(true)
+
+    const migrations = committedMigrations()
+    expect(migrations.length, 'prisma/migrations/ must contain at least one migration folder').toBeGreaterThan(0)
+  })
+
+  it('pins the migration lock to the Postgres provider', () => {
+    const lock = readFileSync(join(migrationsDir, 'migration_lock.toml'), 'utf8')
+    expect(lock).toMatch(/provider\s*=\s*"postgresql"/)
+  })
+
+  it('has an init/baseline migration that reproduces schema.prisma exactly', () => {
+    const migrations = committedMigrations()
+    expect(migrations.length).toBeGreaterThan(0)
+
+    // The baseline is the migration that recreates the whole schema from empty.
+    // At adoption there is exactly one; as the repo grows, `migrate deploy` +
+    // `migrate diff --exit-code` against a real DB (scripts/db-drift-check.sh,
+    // run by CI) becomes the authoritative general guard, while this test keeps
+    // proving the initial baseline reproduces the schema byte-for-byte.
+    const initName = migrations.find((m) => /init|baseline/i.test(m)) ?? migrations[0]
+    const baselineSql = readMigrationSql(initName)
+
+    const expected = normalizeSql(prismaMigrateDiffToSchemaScript())
+    const actual = normalizeSql(baselineSql)
+
+    expect(
+      actual,
+      `schema.prisma and prisma/migrations/${initName}/migration.sql have drifted: regenerate the baseline (or add a new migration) so they agree`,
+    ).toBe(expected)
+  }, 120_000)
+
+  it('carries the money table and its network-leading indexes into the baseline', () => {
+    // A query without a network predicate reads both chains and the planner
+    // cannot use the index properly, so losing these from the migration is both
+    // wrong and slow — guard that the committed baseline keeps them.
+    const allSql = committedMigrations().map(readMigrationSql).join('\n')
+
+    expect(allSql).toMatch(/CREATE TABLE "price_points"/)
+    expect(allSql).toMatch(/"price_points"\("network", "pair_key", "timestamp" DESC\)/)
+    expect(allSql).toMatch(/"price_points"\("network", "pair_key", "source", "timestamp" DESC\)/)
+  })
+})
