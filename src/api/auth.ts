@@ -86,6 +86,44 @@ async function lookupApiKeyResult(
   }
 }
 
+export type AdminAuthResult = 'authorized' | 'unauthorized' | 'not_configured'
+
+/**
+ * Checks whether ADMIN_TOKEN is set to a non-empty, non-placeholder value.
+ * An unset token, whitespace-only string, or obvious placeholder disables the admin surface.
+ */
+export function isAdminConfigured(): boolean {
+  const adminToken = process.env.ADMIN_TOKEN?.trim()
+  if (!adminToken || adminToken.length === 0) return false
+  const weakPlaceholders = new Set(['your-admin-token-here', 'change-me', 'placeholder'])
+  return !weakPlaceholders.has(adminToken.toLowerCase())
+}
+
+/**
+ * Evaluates admin authorization for an incoming request:
+ * - 'not_configured': ADMIN_TOKEN is not set or empty (admin surface disabled)
+ * - 'unauthorized': valid token configured, but request has missing/wrong token
+ * - 'authorized': request provided matching token in constant-time
+ */
+export function checkAdminAuth(req: FastifyRequest): AdminAuthResult {
+  if (!isAdminConfigured()) {
+    return 'not_configured'
+  }
+  const adminToken = process.env.ADMIN_TOKEN!.trim()
+  const supplied =
+    (req.headers['x-admin-token'] as string | undefined) ??
+    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
+  if (!supplied) return 'unauthorized'
+  const a = Buffer.from(supplied)
+  const b = Buffer.from(adminToken)
+  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
+  // The length guard is not itself a meaningful leak for a high-entropy token.
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return 'unauthorized'
+  }
+  return 'authorized'
+}
+
 /**
  * Guards admin routes with a shared secret supplied via the `ADMIN_TOKEN`
  * env var, sent as `X-Admin-Token` (or `Authorization: Bearer <token>`).
@@ -95,18 +133,9 @@ async function lookupApiKeyResult(
  * usage), so the two surfaces cannot drift apart.
  */
 export function isAdminAuthorized(req: FastifyRequest): boolean {
-  const adminToken = process.env.ADMIN_TOKEN
-  if (!adminToken) return false
-  const supplied =
-    (req.headers['x-admin-token'] as string | undefined) ??
-    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
-  if (!supplied) return false
-  const a = Buffer.from(supplied)
-  const b = Buffer.from(adminToken)
-  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
-  // The length guard is not itself a meaningful leak for a high-entropy token.
-  return a.length === b.length && timingSafeEqual(a, b)
+  return checkAdminAuth(req) === 'authorized'
 }
+
 
 /**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.

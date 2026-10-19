@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'crypto'
 import { prisma } from '../db'
 import { admin_auth_failures_total } from '../metrics'
-import { hashApiKey, isAdminAuthorized } from './auth'
+import { hashApiKey, isAdminAuthorized, checkAdminAuth } from './auth'
 import { copyUsageHistory } from '../x402/metering'
 
 /** Generates a new opaque API key with a recognizable `lens_` prefix. */
@@ -59,7 +59,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     '/admin/keys',
     { config: { public: true } },
     async (req: FastifyRequest<{ Body: CreateKeyBody }>, reply: FastifyReply) => {
-      if (!isAdminAuthorized(req)) {
+      const auth = checkAdminAuth(req)
+      if (auth === 'not_configured') {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          code: 'admin_not_configured',
+          message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+        })
+      }
+      if (auth !== 'authorized') {
         admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',
@@ -158,7 +166,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     '/admin/keys/:id',
     { config: { public: true } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      if (!isAdminAuthorized(req)) {
+      const auth = checkAdminAuth(req)
+      if (auth === 'not_configured') {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          code: 'admin_not_configured',
+          message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+        })
+      }
+      if (auth !== 'authorized') {
         admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',

@@ -17,7 +17,7 @@ import { registerNetworkSelector } from './middleware/network'
 import { registerHttpMetrics } from './middleware/httpMetrics'
 import { registerETag } from './middleware/etag'
 import { registerWebSocket } from './api/websocket'
-import { registerApiKeyAuth } from './api/auth'
+import { registerApiKeyAuth, isAdminConfigured } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
 import { registerUsageRoutes } from './api/usage'
 import { registerFacilitatorRoutes } from './api/facilitator'
@@ -192,6 +192,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // Admin endpoints (key issuance/revocation) — gated by ADMIN_TOKEN. Marked
   // `config.public` so the API-key auth hook skips them.
+  if (!isAdminConfigured()) {
+    app.log.warn('ADMIN_TOKEN is not configured; admin routes (/admin/*) are disabled')
+  }
   await registerAdminRoutes(app)
   await registerUsageRoutes(app)
   await app.register(registerFacilitatorRoutes)
