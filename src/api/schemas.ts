@@ -65,22 +65,56 @@ export const readyResponseSchema = {
   },
 } as const
 
-/** GET /status */
+/** GET /status (#273) */
 export const statusResponseSchema = {
   type: 'object',
-  required: ['ok', 'network', 'watchedPairs', 'lastIndexedLedger', 'lastProcessedAt', 'ingestLagSeconds'],
+  required: [
+    'ok',
+    'status',
+    'network',
+    'health',
+    'process',
+    'data',
+    'watchedPairs',
+    'lastIndexedLedger',
+    'lastProcessedAt',
+    'ingestLagSeconds',
+  ],
   additionalProperties: false,
   properties: {
     ok: { type: 'boolean' },
+    status: { type: 'string', enum: ['healthy', 'degraded', 'unhealthy'] },
     network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    health: {
+      type: 'object',
+      required: ['process', 'data'],
+      properties: {
+        process: { type: 'string', enum: ['healthy', 'degraded'] },
+        data: { type: 'string', enum: ['healthy', 'stale'] },
+      },
+    },
+    process: {
+      type: 'object',
+      required: ['uptimeSeconds', 'memoryUsageMb', 'status'],
+      properties: {
+        uptimeSeconds: { type: 'number' },
+        memoryUsageMb: { type: 'number' },
+        status: { type: 'string' },
+      },
+    },
+    data: {
+      type: 'object',
+      required: ['lastIndexedLedger', 'lastProcessedAt', 'ingestLagSeconds', 'isStale'],
+      properties: {
+        lastIndexedLedger: { type: ['integer', 'null'] },
+        lastProcessedAt: {},
+        ingestLagSeconds: { type: ['integer', 'null'] },
+        isStale: { type: 'boolean' },
+      },
+    },
     watchedPairs: { type: 'array', items: { type: 'string' } },
     lastIndexedLedger: { type: ['integer', 'null'] },
-    // The pg driver returns a timestamp column as a JS Date; the validating
-    // serializer sees that pre-serialization object, so accept Date | string |
-    // null here (a Date stringifies to an ISO string in the response body).
     lastProcessedAt: {},
-    // Seconds since the last ingester write for this network, null before the
-    // first one. Lets `/status` reveal a stalled ingester on its own.
     ingestLagSeconds: { type: ['integer', 'null'] },
     // Ingesters that have crashed at least once on this network, newest first,
     // and empty when none have. Present so a crash-looping ingester that keeps
@@ -100,6 +134,17 @@ export const statusResponseSchema = {
         },
       },
     },
+  },
+} as const
+
+export const statusErrorResponseSchema = {
+  type: 'object',
+  required: ['ok', 'status', 'error', 'pagingCondition'],
+  properties: {
+    ok: { type: 'boolean', const: false },
+    status: { type: 'string', const: 'unhealthy' },
+    error: { type: 'string' },
+    pagingCondition: { type: 'string' },
   },
 } as const
 

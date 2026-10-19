@@ -347,24 +347,61 @@ any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md
 
 Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
 
-### 1. Free health check (no payment)
+### 1. Free health check & status monitoring (`/status`)
+
+`/status` provides a structured, comprehensive health contract separating **process health** (runtime container, memory, uptime) from **data health** (ingestion currency, last ledger, ingest lag).
 
 ```bash
 curl http://localhost:3002/status
-# {
-#   "ok": true,
-#   "network": "testnet",
-#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
-#   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
-#   "ingestLagSeconds": 4
-# }
 ```
 
-`/status` answers for one network — pass `?network=mainnet` (or the
-`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
-`null` until that network has ingested, and `lastIndexedLedger` is `null` until
-its SDEX ingester has recorded a trade.
+```json
+{
+  "ok": true,
+  "status": "healthy",
+  "network": "testnet",
+  "health": {
+    "process": "healthy",
+    "data": "healthy"
+  },
+  "process": {
+    "uptimeSeconds": 86420,
+    "memoryUsageMb": 18.42,
+    "status": "healthy"
+  },
+  "data": {
+    "lastIndexedLedger": 53842917,
+    "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+    "ingestLagSeconds": 4,
+    "isStale": false
+  },
+  "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+  "lastIndexedLedger": 53842917,
+  "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+  "ingestLagSeconds": 4
+}
+```
+
+#### Health Differentiation & Paging Conditions
+- **Process Health vs Data Health:** The HTTP status code distinguishes service availability from data staleness.
+  - `HTTP 200 OK` (`status: "healthy"`): Both process runtime and data feeds are functioning normally.
+  - `HTTP 200 OK` (`status: "degraded"`, `health.data: "stale"`): The API server is healthy and responding, but ingestion lag exceeds 300 seconds. **Do not page engineers for intermittent upstream ledger delays.**
+  - `HTTP 503 Service Unavailable` (`pagingCondition: "DATABASE_DOWN"`): Critical infrastructure failure (e.g. Postgres is down or unreachable). **Uptime monitors should page on HTTP 503.**
+
+#### Monitoring Configuration Example (Datadog / Prometheus / BetterStack)
+Configure your synthetic monitor / HTTP probe:
+```yaml
+# Prometheus Blackbox / Uptime monitor probe example
+probe:
+  target: "http://lens-api.internal:3002/status?network=mainnet"
+  method: "GET"
+  expect_status: 200
+  alert_conditions:
+    - severity: critical # Page on-call
+      condition: "status_code == 503 || body.pagingCondition == 'DATABASE_DOWN'"
+    - severity: warning  # Slack notification only
+      condition: "body.health.data == 'stale' || body.data.ingestLagSeconds > 300"
+```
 
 ### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
 
