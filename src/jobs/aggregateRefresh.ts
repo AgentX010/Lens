@@ -5,6 +5,9 @@ import { setCachedPrice } from '../redis'
 import { calculateVWAP, calculateOHLCV, getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { audditatePrice, recordPriceAudit } from '../pricing/audit'
+import { createLogger } from '../logger'
+
+const log = createLogger('job:aggregate-refresh')
 
 /**
  * One queue, worker and job stream per network. Everything a job touches —
@@ -94,7 +97,7 @@ export function startAggregateWorker(network: NetworkName) {
           // Audit record for this published aggregate. The inputs are the
           // per-source VWAP breakdown the aggregate read, split into the
           // ones that fed the composite and the ones that were rejected.
-          const audit = auditatePrice(agg.breakdown ?? [])
+          const audit = audditatePrice(agg.breakdown ?? [])
           await recordPriceAudit({
             network,
             pairKey,
@@ -108,16 +111,16 @@ export function startAggregateWorker(network: NetworkName) {
           })
         }
 
-        console.log(`[aggregator] Refreshed ${network}/${pairKey}: price=${agg.price.toFixed(6)}, route=${route.route}`)
+        log.info({ network, pair: pairKey, price: agg.price, route: route.route }, 'refreshed aggregate')
       } catch (err) {
-        console.error(`[aggregator] Failed for ${network}/${pairKey}:`, (err as Error).message)
+        log.error({ network, pair: pairKey, err }, 'aggregate refresh failed')
       }
     },
     { connection: redisConnection(), concurrency: 5 }
   )
 
   worker.on('failed', (job, err) => {
-    console.error(`[aggregator] Job failed:`, err.message)
+    log.error({ err }, 'aggregate refresh job failed')
   })
 
   return worker
