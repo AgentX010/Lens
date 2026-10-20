@@ -122,10 +122,10 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
   it('absorbs a replay of trades that carry a natural event id', async () => {
     const batch = [point(), point({ eventId: '277710193062797313-0' })]
 
-    expect(await upsertPricePoints(batch, 'testnet')).toBe(2)
+    expect((await upsertPricePoints(batch, 'testnet')).count).toBe(2)
     const rowsAfterFirstPass = fakeTable.length
 
-    expect(await upsertPricePoints(retransmit(batch), 'testnet')).toBe(0)
+    expect((await upsertPricePoints(retransmit(batch), 'testnet')).count).toBe(0)
     expect(fakeTable.length).toBe(rowsAfterFirstPass)
   })
 
@@ -138,10 +138,10 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
       point({ source: 'aquarius_amm', eventId: undefined, price: 0.2 }),
     ]
 
-    expect(await upsertPricePoints(batch, 'testnet')).toBe(2)
+    expect((await upsertPricePoints(batch, 'testnet')).count).toBe(2)
     const rowsAfterFirstPass = fakeTable.length
 
-    expect(await upsertPricePoints(retransmit(batch), 'testnet')).toBe(0)
+    expect((await upsertPricePoints(retransmit(batch), 'testnet')).count).toBe(0)
     expect(fakeTable.length).toBe(rowsAfterFirstPass)
   })
 
@@ -150,14 +150,14 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
     try {
       vi.setSystemTime(new Date('2026-10-17T08:00:00.000Z'))
       const batch = [point({ eventId: undefined, timestamp: undefined, observedAt: undefined })]
-      expect(await upsertPricePoints(batch, 'testnet')).toBe(1)
+      expect((await upsertPricePoints(batch, 'testnet')).count).toBe(1)
       const firstId = fakeTable[0].eventId
       expect(firstId).toBeDefined()
 
       // Replay at a later wall-clock time with identical content
       vi.setSystemTime(new Date('2026-10-17T08:00:05.000Z'))
       const replay = [point({ eventId: undefined, timestamp: undefined, observedAt: undefined })]
-      expect(await upsertPricePoints(replay, 'testnet')).toBe(0)
+      expect((await upsertPricePoints(replay, 'testnet')).count).toBe(0)
       expect(fakeTable.length).toBe(1)
       expect(fakeTable[0].eventId).toBe(firstId)
     } finally {
@@ -173,7 +173,7 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
 
     await upsertPricePoints(instanceA, 'testnet')
     const rowsAfterFirst = fakeTable.length
-    expect(await upsertPricePoints(instanceB, 'testnet')).toBe(0)
+    expect((await upsertPricePoints(instanceB, 'testnet')).count).toBe(0)
     expect(fakeTable.length).toBe(rowsAfterFirst)
   })
 
@@ -181,7 +181,7 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
     // The identity is network-scoped; the same event id on two networks is
     // two legitimately distinct rows (per-network ingesters, #237).
     await upsertPricePoints([point()], 'testnet')
-    expect(await upsertPricePoints([point()], 'mainnet')).toBe(1)
+    expect((await upsertPricePoints([point()], 'mainnet')).count).toBe(1)
     expect(fakeTable.length).toBe(2)
   })
 
