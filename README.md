@@ -31,7 +31,7 @@ Aggregates price data from Stellar's Classic Order Book (SDEX) and AMM Liquidity
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
-| GET | `/status` | Indexer health |
+| GET | `/status` | Process and indexer health ([contract](docs/status.md)) |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
@@ -216,8 +216,10 @@ curl http://localhost:3002/status
 #   "network": "testnet",
 #   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
 #   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
-#   "ingestLagSeconds": 4
+#   "lastProcessedAt": "2026-10-20T16:45:11.220Z",
+#   "ingestLagSeconds": 4,
+#   "process": { "status": "up", "uptimeSeconds": 86400 },
+#   "data": { "status": "fresh", "ingestLagSeconds": 4, "staleAfterSeconds": 300 }
 # }
 ```
 
@@ -225,6 +227,12 @@ curl http://localhost:3002/status
 `x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
 `null` until that network has ingested, and `lastIndexedLedger` is `null` until
 its SDEX ingester has recorded a trade.
+
+Process health and data health are separate: `process.status` is `up` whenever
+the process answers, while `data.status` is `fresh`, `stale` or `empty`. A
+stale ingester answers **`503`** (the only paging condition); `empty` stays
+`200`. See [`docs/status.md`](docs/status.md) for the full shape, status-code
+contract and monitor configuration examples.
 
 ### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
 

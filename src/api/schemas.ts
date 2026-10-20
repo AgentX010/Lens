@@ -16,12 +16,35 @@
 import Ajv from 'ajv'
 import type { FastifyInstance, FastifySchema } from 'fastify'
 
-/** GET /status */
+/**
+ * GET /status
+ *
+ * Two independent health verdicts, so an up process and stale data never look
+ * alike:
+ *   - `process` describes this HTTP process (it is answering, so `up`).
+ *   - `data` describes the ingester behind the selected network, derived from
+ *     the age of its newest write.
+ *
+ * The flat `lastIndexedLedger` / `lastProcessedAt` / `ingestLagSeconds` fields
+ * predate the split and are kept as mirrors of the `data` values so existing
+ * consumers do not break. See docs/status.md for the contract.
+ */
 export const statusResponseSchema = {
   type: 'object',
-  required: ['ok', 'network', 'watchedPairs', 'lastIndexedLedger', 'lastProcessedAt', 'ingestLagSeconds'],
+  required: [
+    'ok',
+    'network',
+    'watchedPairs',
+    'lastIndexedLedger',
+    'lastProcessedAt',
+    'ingestLagSeconds',
+    'process',
+    'data',
+  ],
   additionalProperties: false,
   properties: {
+    // Process health only: true whenever this process can serve the request.
+    // It says nothing about whether the prices behind it are current.
     ok: { type: 'boolean' },
     network: { type: 'string', enum: ['testnet', 'mainnet'] },
     watchedPairs: { type: 'array', items: { type: 'string' } },
@@ -33,6 +56,25 @@ export const statusResponseSchema = {
     // Seconds since the last ingester write for this network, null before the
     // first one. Lets `/status` reveal a stalled ingester on its own.
     ingestLagSeconds: { type: ['integer', 'null'] },
+    process: {
+      type: 'object',
+      required: ['status', 'uptimeSeconds'],
+      additionalProperties: false,
+      properties: {
+        status: { type: 'string', enum: ['up'] },
+        uptimeSeconds: { type: 'integer' },
+      },
+    },
+    data: {
+      type: 'object',
+      required: ['status', 'ingestLagSeconds', 'staleAfterSeconds'],
+      additionalProperties: false,
+      properties: {
+        status: { type: 'string', enum: ['fresh', 'stale', 'empty'] },
+        ingestLagSeconds: { type: ['integer', 'null'] },
+        staleAfterSeconds: { type: 'integer' },
+      },
+    },
   },
 } as const
 

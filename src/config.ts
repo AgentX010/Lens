@@ -254,6 +254,11 @@ const globalConfig = {
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
+  status: {
+    // How old the newest indexer write may be before `/status` calls the data
+    // stale and answers 503. See docs/status.md.
+    staleAfterSeconds: parseInt(process.env.STATUS_STALE_AFTER_SECONDS ?? '300', 10),
+  },
 } as const
 
 // ── Per-network map ───────────────────────────────────────────────────────────
@@ -334,4 +339,5 @@ export const config = {
   indexer: globalConfig.indexer,
   cache:   globalConfig.cache,
   http:    globalConfig.http,
+  status:  globalConfig.status,
 }
