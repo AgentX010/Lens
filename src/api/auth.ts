@@ -47,6 +47,80 @@ export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | n
   return (await lookupApiKeyResult(plaintext)).context
 }
 
+/**
+ * Default throttle interval for updating `lastUsedAt` in seconds.
+ * Throttles writes so that high-frequency authenticated traffic does not turn
+ * a read-only authentication check into continuous database writes, while
+ * keeping last-used timestamps fresh enough for audit and key revocation decisions.
+ */
+export const DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS = 60
+
+/** In-memory timestamp map tracking when each key's lastUsedAt was last written to the DB. */
+const keyLastUsedTimestamps = new Map<string, number>()
+
+/**
+ * Returns the configured throttle interval in milliseconds for `lastUsedAt` updates.
+ * Configurable via environment variable:
+ * - `KEY_LAST_USED_THROTTLE_SECONDS` (or `API_KEY_LAST_USED_THROTTLE_SECONDS`)
+ * Defaults to 60 seconds (60,000 ms).
+ */
+export function getKeyLastUsedThrottleMs(): number {
+  const envVal =
+    process.env.KEY_LAST_USED_THROTTLE_SECONDS ??
+    process.env.API_KEY_LAST_USED_THROTTLE_SECONDS
+  if (envVal !== undefined) {
+    const parsed = parseInt(envVal, 10)
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed * 1000
+    }
+  }
+  return DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS * 1000
+}
+
+/**
+ * Clears the in-memory throttle cache.
+ * Exported for testing isolation.
+ */
+export function resetApiKeyLastUsedThrottle(): void {
+  keyLastUsedTimestamps.clear()
+}
+
+/**
+ * Records the `lastUsedAt` timestamp for an authenticated API key in Prisma.
+ * The database write is throttled to at most once per configured throttle interval
+ * per key.
+ *
+ * Returns `true` if a database write was performed, or `false` if the update
+ * was throttled.
+ */
+export async function recordApiKeyLastUsed(
+  keyId: string,
+  timestamp: Date = new Date(),
+): Promise<boolean> {
+  const now = timestamp.getTime()
+  const lastRecorded = keyLastUsedTimestamps.get(keyId) ?? 0
+  const throttleMs = getKeyLastUsedThrottleMs()
+
+  if (now - lastRecorded < throttleMs) {
+    return false
+  }
+
+  // Update in-memory tracker immediately to throttle concurrent requests
+  keyLastUsedTimestamps.set(keyId, now)
+
+  try {
+    await prisma.apiKey.update({
+      where: { id: keyId },
+      data: { lastUsedAt: timestamp },
+    })
+    return true
+  } catch {
+    // Best-effort write: database error updating lastUsedAt should not fail
+    // an otherwise valid and authenticated request.
+    return false
+  }
+}
+
 async function lookupApiKeyResult(
   plaintext: string,
 ): Promise<{ context: ApiKeyContext | null; failureReason?: ApiKeyAuthFailureReason }> {
@@ -157,6 +231,7 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     }
 
     req.apiKey = keyContext
+    await recordApiKeyLastUsed(keyContext.id)
   })
 }
 
