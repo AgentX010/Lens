@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import { Pool } from 'pg'
 import { db_query_duration_seconds } from './metrics'
-import { config } from './config'
+import { config, type NetworkName } from './config'
 
 // Prisma for schema management + simple queries
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
@@ -29,14 +29,23 @@ pgPool.query = (async (...args: any[]) => {
   }
 }) as any
 
+/**
+ * `network` is required rather than defaulting to the active one. Ingesters are
+ * started per network (see startSDEXIngester(network) and friends), so a single
+ * process runs a testnet and a mainnet loop side by side. Tagging rows from the
+ * global STELLAR_NETWORK wrote every mainnet price as testnet, silently blending
+ * real prices with a test chain's in one table. A required argument is what
+ * stops that reappearing the next time a venue is added.
+ */
 export async function upsertPricePoints(points: {
   assetA: string; assetB: string; pairKey: string; source: string
   poolId?: string; price: number; baseVolume: number; counterVolume: number
   ledger: number; timestamp: Date; eventId?: string
-}[]): Promise<number> {
+}[], network: NetworkName): Promise<number> {
   if (points.length === 0) return 0
   const result = await prisma.pricePoint.createMany({
     data: points.map(p => ({
+      network,
       assetA: p.assetA,
       assetB: p.assetB,
       pairKey: p.pairKey,
@@ -54,15 +63,25 @@ export async function upsertPricePoints(points: {
   return result.count
 }
 
-export async function getIndexerCursor(id: string): Promise<string | null> {
-  const state = await prisma.indexerState.findUnique({ where: { id } })
-  return state?.lastCursor ?? null
+/**
+ * The cursor and the ledger it reached, read in one round trip. Ingesters need
+ * both: the cursor resumes pagination, and the ledger is the fallback when a
+ * trade's TOID can't be parsed (see ingesters/toid.ts).
+ */
+export interface IndexerState {
+  cursor: string | null
+  ledger: number | null
 }
 
-export async function setIndexerCursor(id: string, cursor: string, ledger?: number): Promise<void> {
+export async function getIndexerState(id: string, network: NetworkName): Promise<IndexerState> {
+  const state = await prisma.indexerState.findUnique({ where: { network_id: { network, id } } })
+  return { cursor: state?.lastCursor ?? null, ledger: state?.lastLedger ?? null }
+}
+
+export async function setIndexerCursor(id: string, cursor: string, network: NetworkName, ledger?: number): Promise<void> {
   await prisma.indexerState.upsert({
-    where: { id },
-    create: { id, lastCursor: cursor, lastLedger: ledger, lastProcessedAt: new Date() },
+    where: { network_id: { network, id } },
+    create: { id, network, lastCursor: cursor, lastLedger: ledger, lastProcessedAt: new Date() },
     update: { lastCursor: cursor, lastLedger: ledger, lastProcessedAt: new Date() },
   })
 }

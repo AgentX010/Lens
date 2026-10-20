@@ -82,6 +82,6 @@ describe('appendSnapshots', () => {
 
     await appendSnapshots()
 
-    expect(mockQuery.mock.calls[0][0]).toMatch(/ON CONFLICT \(pair, ts\) DO NOTHING/)
+    expect(mockQuery.mock.calls[0][0]).toMatch(/ON CONFLICT \(network, pair, ts\) DO NOTHING/)
   })
 })

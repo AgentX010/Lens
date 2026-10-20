@@ -11,6 +11,7 @@ datasource db {
 
 model PricePoint {
   id            String   @default(uuid())
+  network       String   @default("testnet")
   assetA        String   @map("asset_a")
   assetB        String   @map("asset_b")
   pairKey       String   @map("pair_key")
@@ -24,13 +25,14 @@ model PricePoint {
   eventId       String?  @map("event_id")
 
   @@id([id, timestamp])
-  @@index([pairKey, timestamp(sort: Desc)])
-  @@index([pairKey, source, timestamp(sort: Desc)])
+  @@index([network, pairKey, timestamp(sort: Desc)])
+  @@index([network, pairKey, source, timestamp(sort: Desc)])
   @@map("price_points")
 }
 
 model PoolSnapshot {
   id          String   @default(uuid())
+  network     String   @default("testnet")
   poolId      String   @map("pool_id")
   assetA      String   @map("asset_a")
   assetB      String   @map("asset_b")
@@ -43,12 +45,13 @@ model PoolSnapshot {
   timestamp   DateTime
 
   @@id([id, timestamp])
-  @@index([poolId, timestamp(sort: Desc)])
+  @@index([network, poolId, timestamp(sort: Desc)])
   @@map("pool_snapshots")
 }
 
 model PriceAggregate {
   pairKey     String   @map("pair_key")
+  network     String   @default("testnet")
   window      String
   bucket      DateTime
   vwap        Decimal  @db.Decimal(36, 18)
@@ -63,44 +66,184 @@ model PriceAggregate {
   highPrice   Decimal? @map("high_price") @db.Decimal(36, 18)
   lowPrice    Decimal? @map("low_price") @db.Decimal(36, 18)
 
-  @@id([pairKey, window, bucket])
+  @@id([network, pairKey, window, bucket])
   @@map("price_aggregates")
 }
 
 model PriceSnapshot {
   pair   String
+  network String   @default("testnet")
   ts     DateTime
   price  Decimal  @db.Decimal(36, 18)
   volume Decimal  @default(0) @db.Decimal(36, 7)
 
-  @@id([pair, ts])
-  @@index([pair, ts])
+  @@id([network, pair, ts])
+  @@index([network, pair, ts])
   @@map("price_snapshots")
 }
 
 model IndexerState {
-  id              String    @id
+  id              String
+  network         String   @default("testnet")
   lastCursor      String?   @map("last_cursor")
   lastLedger      Int?      @map("last_ledger")
   lastProcessedAt DateTime? @map("last_processed_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
+  @@id([network, id])
   @@map("indexer_state")
 }
 
 model PairConfig {
-  pairKey   String   @id @map("pair_key")
+  pairKey   String   @map("pair_key")
+  network   String   @default("testnet")
   assetACode   String   @map("asset_a_code")
   assetAIssuer String?  @map("asset_a_issuer")
   assetBCode   String   @map("asset_b_code")
   assetBIssuer String?  @map("asset_b_issuer")
   addedAt   DateTime @default(now()) @map("added_at")
 
+  @@id([network, pairKey])
   @@map("pair_configs")
+}
+
+/// A single x402-discoverable resource in the Bazaar catalog — either an
+/// HTTP endpoint or an MCP tool, per the x402 `bazaar` extension
+/// (specs/extensions/bazaar.md in x402-foundation/x402).
+///
+/// HTTP and MCP resources share one table (discriminated by `type`) rather
+/// than two, because a discovery listing is fundamentally "a resource with
+/// payment requirements and a bazaar.info blob" regardless of transport —
+/// splitting them would require the discovery query to UNION two tables on
+/// every filter combination for no benefit, since the two types are never
+/// looked up via different access patterns.
+model BazaarResource {
+  id String @id @default(uuid())
+
+  /// "http" | "mcp" — discriminates which of the two input shapes below applies.
+  type String
+
+  /// Which Stellar network this listing settles on ("mainnet" | "testnet").
+  /// Mirrors config.ts's NetworkName so a listing is never ambiguous about
+  /// which network's payTo/asset it refers to.
+  network String
+
+  /// The protected resource URL (`resource.url` in the spec). For MCP this is
+  /// the MCP server endpoint, not the tool itself — the tool is disambiguated
+  /// by `mcpToolName` below.
+  url String
+
+  /// `resource.description` — human-readable description of the resource.
+  description String?
+
+  /// `resource.mimeType`.
+  mimeType String? @map("mime_type")
+
+  /// Optional service metadata the spec allows on `resource`.
+  serviceName String?  @map("service_name")
+  tags        String[] @default([])
+  iconUrl     String?  @map("icon_url")
+
+  /// MCP tool identifier (`input.toolName`). Null for HTTP resources.
+  /// Per the spec, MCP resources are keyed on the TUPLE of (resource.url,
+  /// input.toolName) since multiple tools multiplex over one server endpoint.
+  /// We additionally scope that tuple by `network` (see @@unique below) —
+  /// a deliberate deviation, called out in the PR: since Lens is
+  /// dual-network, the same (url, toolName) pair can legitimately exist
+  /// once per network with a different payTo/asset in `accepts`, and the
+  /// spec's tuple alone can't express that without collapsing them.
+  mcpToolName String? @map("mcp_tool_name")
+
+  /// HTTP method for HTTP resources (GET/POST/...). Null for MCP resources.
+  httpMethod String? @map("http_method")
+
+  /// Full `accepts[]` payment requirements array (scheme/network/amount/asset/
+  /// payTo/maxTimeoutSeconds/extra), stored verbatim so the discovery response
+  /// can round-trip the exact PaymentRequirements the resource advertised.
+  accepts Json
+
+  /// The `payTo` address extracted from accepts[0] for indexed filtering.
+  /// Denormalized on write because Postgres cannot efficiently index into a
+  /// JSON array element without a functional/GIN index per accepted scheme,
+  /// and payTo is the one field the spec calls out as a top-level filter.
+  payTo String @map("pay_to")
+
+  /// `extensions.bazaar.info` — discovery metadata (input type, params, output).
+  bazaarInfo Json @map("bazaar_info")
+
+  /// `extensions.bazaar.schema` — JSON Schema validating `bazaarInfo`.
+  bazaarSchema Json @map("bazaar_schema")
+
+  /// `extensions.bazaar.routeTemplate` — canonical `:param` pattern for
+  /// dynamic HTTP routes, used by the facilitator to consolidate listings.
+  routeTemplate String? @map("route_template")
+
+  /// Any other declared extension keys beyond "bazaar" (spec's `extensions`
+  /// filter matches on presence of a key here, "bazaar" always included).
+  extensionKeys String[] @default(["bazaar"]) @map("extension_keys")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // HTTP resources are keyed on (network, url, httpMethod); MCP resources are
+  // keyed on (network, url, mcpToolName) per the spec's tuple. Postgres
+  // treats NULLs as distinct in a unique index, so these two constraints
+  // don't collide with each other for a row that only populates one side.
+  @@unique([network, url, httpMethod], name: "bazaarHttpIdentity", map: "bazaar_http_identity")
+  @@unique([network, url, mcpToolName], name: "bazaarMcpIdentity", map: "bazaar_mcp_identity")
+  // Covers the six spec filters (type, payTo, network, extensions via
+  // extensionKeys, plus limit/offset) and keeps pagination stable — see
+  // routes/discovery.ts, which always orders by (createdAt, id).
+  @@index([network, type, payTo, createdAt(sort: Desc), id])
+  @@index([extensionKeys], type: Gin)
+  @@map("bazaar_resources")
+}
+
+/// One settlement attempt through POST /settle.
+///
+/// Written BEFORE the transaction is submitted, so a resource server that
+/// times out and retries finds a record rather than causing a second payment.
+/// The idempotency key is the inner transaction hash — derived from the
+/// payload, and the same hash the ledger records.
+model SettlementAttempt {
+  id String @id @default(uuid())
+
+  /// Network the payment settles on, as "testnet" | "mainnet" — the same
+  /// vocabulary every other model in this schema uses, so a network filter
+  /// works uniformly. The CAIP-2 id ("stellar:testnet") is a wire format and
+  /// stays on the wire; storing it here would silently exclude these rows
+  /// from any query that filters network the way the rest of the schema does.
+  network String @default("testnet")
+
+  /// Inner transaction hash, hex — the idempotency key.
+  txHash String @map("tx_hash")
+
+  /// "submitting" | "settled" | "failed". A row stuck in "submitting" is
+  /// resolved by reading the ledger, never by resubmitting.
+  state String
+
+  payer        String?
+  payTo        String? @map("pay_to")
+  asset        String?
+  amount       String?
+  errorReason  String? @map("error_reason")
+  errorMessage String? @map("error_message")
+
+  /// The SettleResponse returned to the caller, replayed verbatim on a retry.
+  response Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  /// The lock. Two concurrent settles for the same payload race to insert and
+  /// exactly one wins; the loser replays the winner's answer.
+  @@unique([network, txHash], name: "network_txHash", map: "settlement_attempt_identity")
+  @@map("settlement_attempts")
 }
 
 model Webhook {
   id        String   @id @default(uuid())
+  network   String   @default("testnet")
   url       String
   assetA    String   @map("asset_a")
   assetB    String   @map("asset_b")
@@ -109,7 +252,7 @@ model Webhook {
   secret    String
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([assetA, assetB])
+  @@index([network, assetA, assetB])
   @@map("webhooks")
 }
 
@@ -120,6 +263,7 @@ model ApiKey {
   ratePerMin       Int       @default(60) @map("rate_per_min")
   ratePerDay       Int       @default(10000) @map("rate_per_day")
   revokedAt        DateTime? @map("revoked_at")
+  expiresAt        DateTime? @map("expires_at")
   createdAt        DateTime  @default(now()) @map("created_at")
   monthlyQuotaCents Int?     @default(10000) @map("monthly_quota_cents")
   dailyQuotaCents  Int?      @default(500) @map("daily_quota_cents")

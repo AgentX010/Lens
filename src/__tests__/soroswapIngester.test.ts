@@ -106,7 +106,9 @@ describe('ingestPool', () => {
   it('stores a price point when reserves are non-zero', async () => {
     const mockFetch = vi.fn().mockResolvedValue([10_000_000n, 2_000_000n])
 
-    await ingestPool(mockPoolEntry, mockPair as any, mockFetch)
+    // See the note in ammIngester.test.ts: the network passed in must be the
+    // one written, so this uses a network the process is not running as.
+    await ingestPool(mockPoolEntry, mockPair as any, mockFetch, 'mainnet')
 
     expect(upsertPricePoints).toHaveBeenCalledWith(
       expect.arrayContaining([
@@ -115,7 +117,8 @@ describe('ingestPool', () => {
           price: expect.closeTo(5.0, 5),
           poolId: mockPoolEntry.poolAddress,
         }),
-      ])
+      ]),
+      'mainnet'
     )
     expect(dispatchPriceUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ assetA: 'XLM', assetB: 'USDC' })
@@ -164,7 +167,8 @@ describe('ingestPair', () => {
     expect(mockFetchPools).toHaveBeenCalledWith(
       factory,
       xlmToken.address,
-      usdcToken.address
+      usdcToken.address,
+      expect.any(String)
     )
   })
 

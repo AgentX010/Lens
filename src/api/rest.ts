@@ -4,29 +4,62 @@ import { getCachedPrice, setCachedPrice } from '../redis'
 import { getAggregatedPrice } from '../aggregator/vwap'
 import { getBestRoute } from '../aggregator/bestRoute'
 import { pgPool } from '../db'
-import { config } from '../config'
+import { config, getNetworkConfig, activeNetwork, type NetworkName } from '../config'
+import '../middleware/network' // declares req.network on the FastifyRequest type
 import {
   statusResponseSchema,
   priceResponseSchema,
   routeResponseSchema,
   historyResponseSchema,
   poolsResponseSchema,
+  depthResponseSchema,
   installResponseValidation,
 } from './schemas'
+import { getDepth } from '../pricing/depth'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
 }
 
-function findPair(assetA: string, assetB: string) {
-  const normalize = (a: string) => a.toLowerCase() === 'native' ? 'XLM' : a.split(':')[0].toUpperCase()
-  const cA = normalize(assetA)
-  const cB = normalize(assetB)
-  return config.pairs.find(p => {
-    const pA = p.assetA.code.toUpperCase()
-    const pB = p.assetB.code.toUpperCase()
-    return (cA === pA && cB === pB) || (cA === pB && cB === pA)
-  })
+/**
+ * Resolve a requested pair against the ones this network watches.
+ *
+ * The issuer is honoured when the caller supplies one. It used to be discarded
+ * outright — `a.split(':')[0]` — so every asset called USDC was the same asset,
+ * and a request for Circle's mainnet USDC was answered with testnet USDC's
+ * price, stamped `"network":"testnet"`, at 1.72 per XLM against a real ~0.18.
+ *
+ * That is the worst failure mode an oracle has: not a refusal, but a confident
+ * wrong number. Asset codes are not unique on Stellar — anyone can issue
+ * "USDC", and Horizon lists many — so the issuer is the only thing that
+ * identifies an asset. A bare code still matches on code alone, since callers
+ * quoting XLM or a single-issuer asset rely on that.
+ */
+function findPair(assetA: string, assetB: string, network: NetworkName) {
+  const parse = (a: string) => {
+    if (a.toLowerCase() === 'native') return { code: 'XLM', issuer: null as string | null }
+    const [code, issuer] = a.split(':')
+    return { code: (code ?? '').toUpperCase(), issuer: issuer ?? null }
+  }
+  const qA = parse(assetA)
+  const qB = parse(assetB)
+
+  const matches = (
+    q: { code: string; issuer: string | null },
+    side: { code: string; issuer?: string | null },
+  ) => {
+    if (q.code !== side.code.toUpperCase()) return false
+    // Only enforce the issuer when both sides name one; XLM has none, and a
+    // caller passing a bare code is not asserting which issuer they meant.
+    if (!q.issuer || !side.issuer) return true
+    return q.issuer === side.issuer
+  }
+
+  return getNetworkConfig(network).pairs.find(
+    p =>
+      (matches(qA, p.assetA) && matches(qB, p.assetB)) ||
+      (matches(qA, p.assetB) && matches(qB, p.assetA)),
+  )
 }
 
 export async function registerRESTRoutes(app: FastifyInstance) {
@@ -36,15 +69,29 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   installResponseValidation(app)
 
   // GET /status — public health/monitoring endpoint (no API key required)
-  app.get('/status', { config: { public: true }, schema: { response: { 200: statusResponseSchema } } }, async () => {
+  app.get('/status', { config: { public: true }, schema: { response: { 200: statusResponseSchema } } }, async (req) => {
+    const network = req.network ?? activeNetwork
     const result = await pgPool.query(
-      `SELECT last_ledger, last_processed_at FROM indexer_state ORDER BY updated_at DESC LIMIT 1`
+      `SELECT last_ledger, last_processed_at
+         FROM indexer_state
+        WHERE network = $1
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [network]
     )
+    const lastProcessedAt = result.rows[0]?.last_processed_at ?? null
     return {
       ok: true,
-      watchedPairs: config.pairs.map(p => p.pairKey),
+      network,
+      watchedPairs: getNetworkConfig(network).pairs.map(p => p.pairKey),
       lastIndexedLedger: result.rows[0]?.last_ledger ?? null,
-      lastProcessedAt: result.rows[0]?.last_processed_at ?? null,
+      lastProcessedAt,
+      // Seconds since the last write for this network — a stalled ingester is
+      // visible to `/status` polling without needing Prometheus. Null until the
+      // network has ingested at least once.
+      ingestLagSeconds: lastProcessedAt
+        ? Math.max(0, Math.round((Date.now() - new Date(lastProcessedAt).getTime()) / 1000))
+        : null,
     }
   })
 
@@ -56,10 +103,14 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     async (req, reply) => {
       price_requests_total.inc()
       const { assetA, assetB } = req.params
-      const pair = findPair(assetA, assetB)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched` })
+      const network = req.network ?? activeNetwork
+      const pair = findPair(assetA, assetB, network)
+      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
 
-      const cached = await getCachedPrice(pair.pairKey)
+      // Cache key is network-scoped so testnet/mainnet prices for the same
+      // asset codes never collide.
+      const cacheKey = `${network}:${pair.pairKey}`
+      const cached = await getCachedPrice(cacheKey)
       if (cached) {
         try {
           reply.header('X-Cache', 'HIT')
@@ -67,18 +118,19 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         } catch { /* fall through */ }
       }
 
-      const agg = await getAggregatedPrice(pair.pairKey)
-      const route = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, 1000)
+      const agg = await getAggregatedPrice(pair.pairKey, network)
+      const route = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, 1000, network)
       const result = {
         assetA: pair.assetA.code,
         assetB: pair.assetB.code,
         pairKey: pair.pairKey,
+        network,
         ...agg,
         bestRoute: route.route,
         lastUpdated: new Date().toISOString(),
       }
 
-      await setCachedPrice(pair.pairKey, result, config.cache.priceTtl)
+      await setCachedPrice(cacheKey, result, config.cache.priceTtl)
       reply.header('X-Cache', 'MISS')
       return result
     }
@@ -94,11 +146,12 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { assetA, assetB } = req.params
       const amount = parseFloat(req.query.amount ?? '1000')
-      const pair = findPair(assetA, assetB)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched` })
+      const network = req.network ?? activeNetwork
+      const pair = findPair(assetA, assetB, network)
+      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
       if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
 
-      return getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount)
+      return getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount, network)
     }
   )
 
@@ -114,6 +167,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const window = req.query.window ?? '1h'
       const limit = Math.min(parseInt(req.query.limit ?? '100', 10), 1000)
       const pairKey = makePairKey(assetA, assetB)
+      const network = req.network ?? activeNetwork
 
       if (!['1m', '5m', '1h', '24h'].includes(window)) {
         return reply.status(400).send({ error: 'window must be one of: 1m, 5m, 1h, 24h' })
@@ -124,14 +178,15 @@ export async function registerRESTRoutes(app: FastifyInstance) {
                 volume::float, trade_count, open_price::float, close_price::float,
                 high_price::float, low_price::float
          FROM price_aggregates
-         WHERE pair_key = $1 AND window = $2
+         WHERE pair_key = $1 AND window = $2 AND network = $3
          ORDER BY bucket DESC
-         LIMIT $3`,
-        [pairKey, window, limit]
+         LIMIT $4`,
+        [pairKey, window, network, limit]
       )
 
       return {
         pairKey,
+        network,
         window,
         buckets: result.rows.map(r => ({
           bucket: r.bucket,
@@ -150,13 +205,64 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   )
 
   // GET /pools
-  app.get('/pools', { schema: { response: { 200: poolsResponseSchema } } }, async () => {
+  //
+  // Latest snapshot per pool for one network, without reading history. The pool
+  // ids are discovered with a recursive "skip scan" over the
+  // (network, pool_id, timestamp DESC) index (jump to the next distinct pool_id
+  // each step), then one LIMIT 1 index probe per pool fetches its newest row.
+  // Cost is O(pools x log n); the old DISTINCT ON sorted every row of every
+  // network. A quiet pool is kept with its real `timestamp`, never dropped.
+  app.get('/pools', { schema: { response: { 200: poolsResponseSchema } } }, async (req) => {
+    const network = req.network ?? activeNetwork
     const result = await pgPool.query(
-      `SELECT DISTINCT ON (pool_id) pool_id, asset_a, asset_b,
-              reserve_a::float, reserve_b::float, spot_price::float, fee_bp, timestamp
-       FROM pool_snapshots
-       ORDER BY pool_id, timestamp DESC`
+      `WITH RECURSIVE ids AS (
+         (SELECT pool_id FROM pool_snapshots WHERE network = $1 ORDER BY pool_id LIMIT 1)
+         UNION ALL
+         SELECT (SELECT s.pool_id FROM pool_snapshots s
+                  WHERE s.network = $1 AND s.pool_id > ids.pool_id
+                  ORDER BY s.pool_id LIMIT 1)
+           FROM ids
+          WHERE ids.pool_id IS NOT NULL
+       )
+       SELECT l.pool_id, l.asset_a, l.asset_b,
+              l.reserve_a::float, l.reserve_b::float, l.spot_price::float, l.fee_bp, l.timestamp
+         FROM ids
+        CROSS JOIN LATERAL (
+              SELECT * FROM pool_snapshots s
+               WHERE s.network = $1 AND s.pool_id = ids.pool_id
+               ORDER BY s.timestamp DESC
+               LIMIT 1
+             ) l
+        WHERE ids.pool_id IS NOT NULL`,
+      [network]
     )
     return { pools: result.rows }
   })
+
+  // GET /price/:assetA/:assetB/depth?amount=1000
+  app.get<{
+    Params: { assetA: string; assetB: string }
+    Querystring: { amount?: string }
+  }>(
+    '/price/:assetA/:assetB/depth',
+    { schema: { response: { 200: depthResponseSchema } } },
+    async (req, reply) => {
+      const { assetA, assetB } = req.params
+      const amount = parseFloat(req.query.amount ?? '1000')
+      const network = req.network ?? activeNetwork
+      const pair = findPair(assetA, assetB, network)
+
+      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
+
+      const depthResult = await getDepth(pair.pairKey, amount, network)
+      
+      return {
+        assetA: pair.assetA.code,
+        assetB: pair.assetB.code,
+        pairKey: pair.pairKey,
+        ...depthResult
+      }
+    }
+  )
 }

@@ -20,17 +20,25 @@ vi.mock('../src/aggregator/bestRoute', () => ({
   getBestRoute: mockGetBestRoute,
 }))
 
+const { stalenessTestPairs } = vi.hoisted(() => ({
+  stalenessTestPairs: [
+    {
+      pairKey: 'USDC/XLM',
+      assetA: { code: 'XLM', issuer: null },
+      assetB: { code: 'USDC', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5' },
+    },
+  ],
+}))
+
 vi.mock('../src/config', () => ({
   config: {
-    pairs: [
-      {
-        pairKey: 'USDC/XLM',
-        assetA: { code: 'XLM', issuer: null },
-        assetB: { code: 'USDC', issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5' },
-      },
-    ],
+    pairs: stalenessTestPairs,
     cache: { priceTtl: 10 },
   },
+  activeNetwork: 'testnet',
+  getNetworkConfig: (network: string) => ({
+    pairs: network === 'testnet' ? stalenessTestPairs : [],
+  }),
 }))
 
 import { registerRESTRoutes } from '../src/api/rest'

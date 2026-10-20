@@ -10,9 +10,11 @@ vi.mock('../src/db', () => ({
   },
 }))
 
-vi.mock('@stellar/stellar-sdk', () => {
+vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>()
   const callFn = vi.fn()
   return {
+    ...actual,
     Horizon: {
       Server: vi.fn(function () {
         return {
@@ -27,6 +29,13 @@ vi.mock('@stellar/stellar-sdk', () => {
       }),
       { native: vi.fn(() => 'native') }
     ),
+    // config.ts's buildNetworkConfig() falls back to these when no
+    // NETWORK_PASSPHRASE_* env var is set — needed now that getBestRoute
+    // resolves a per-network Horizon client via getNetworkConfig().
+    Networks: {
+      PUBLIC: 'Public Global Stellar Network ; September 2015',
+      TESTNET: 'Test SDF Network ; September 2015',
+    },
     __mockCall: callFn,
   }
 })
@@ -42,7 +51,13 @@ describe('Price aggregator property tests', () => {
     vi.clearAllMocks()
   })
 
-  it('produces valid route results for random venue prices', async () => {
+  // 10,000 fast-check runs of getBestRoute now actually execute (previously
+  // this test failed before running a single iteration — the mocked
+  // @stellar/stellar-sdk had no Networks export, which getNetworkConfig()
+  // needs); that volume of real work needs more than the 5s default.
+  // 30s keeps real headroom for 10k async iterations under fork load while
+  // staying tight enough that a genuine hang still fails the run.
+  it('produces valid route results for random venue prices', { timeout: 30_000 }, async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.float({ min: 0, max: 2000, noNaN: true, noDefaultInfinity: true, noNegativeZero: true }),
@@ -77,9 +92,19 @@ describe('Price aggregator property tests', () => {
           expect(['SDEX', 'AMM', 'SPLIT', 'UNKNOWN']).toContain(result.route)
           expect(result.estimatedOutput).toBeGreaterThanOrEqual(0)
           expect(result.slippagePct).toBeGreaterThanOrEqual(0)
-          expect(result.slippagePct).toBeCloseTo(0, 6)
+          expect(Number.isFinite(result.slippagePct)).toBe(true)
+          if (ammPrice <= 0 || result.route !== 'AMM') {
+            // slippage is only measured against the AMM spot on an AMM route;
+            // SDEX/SPLIT (or no pool) have no size-independent reference
+            expect(result.slippagePct).toBe(0)
+          }
 
           if (sdexPrice === 0) {
+            // AMM-only: slippage is exactly the curve's gap to reserve-ratio spot
+            const reserveA = 10000
+            const reserveB = (ammPrice * (reserveA + amount * fee)) / fee
+            const spot = reserveB / reserveA
+            expect(result.slippagePct).toBeCloseTo(Math.max(0, ((spot - ammPrice) / spot) * 100), 4)
             expect(result.route).toBe('AMM')
             expect(result.estimatedOutput).toBeCloseTo(ammPrice * amount, 6)
           }

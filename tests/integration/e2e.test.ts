@@ -50,7 +50,14 @@ async function waitForService(timeoutMs = 120_000) {
   throw new Error('Lens service did not become healthy in time')
 }
 
-describe('Docker Compose end-to-end ingest → query', () => {
+// This suite spins up the full docker-compose stack (postgres + redis + Lens)
+// and is far too heavy for the default `npm test` / CI build job, where no
+// stack is running — `docker compose up --build` there just times out the hook.
+// It is opt-in: set LENS_E2E=1 in an environment that has the stack available
+// (e.g. a dedicated integration CI job). Otherwise the suite is skipped.
+const runE2E = process.env.LENS_E2E === '1'
+
+describe.skipIf(!runE2E)('Docker Compose end-to-end ingest → query', () => {
   beforeAll(async () => {
     run(`docker compose -f ${COMPOSE_FILE} down --volumes --remove-orphans`)
     run(`docker compose -f ${COMPOSE_FILE} up -d --build`)

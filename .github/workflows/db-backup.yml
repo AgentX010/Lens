@@ -1,0 +1,82 @@
+name: Nightly DB backup
+
+# Logical dumps of the per-network Postgres (Neon/direct URL). This repo is
+# public, so Actions artifacts are world-readable — only age ciphertext is
+# uploaded. See docs/backup-restore.md.
+on:
+  schedule:
+    # 03:00 UTC — one hour before the load test (04:00), so dump I/O and the
+    # 5k-RPS flood do not overlap.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    name: pg_dump (${{ matrix.network }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [mainnet, testnet]
+    env:
+      DATABASE_URL_MAINNET: ${{ secrets.DATABASE_URL_MAINNET }}
+      DATABASE_URL_TESTNET: ${{ secrets.DATABASE_URL_TESTNET }}
+      AGE_RECIPIENT: ${{ secrets.AGE_RECIPIENT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql-client and age
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client age
+
+      - name: Dump ${{ matrix.network }}
+        id: dump
+        env:
+          NETWORK: ${{ matrix.network }}
+        run: |
+          set -euo pipefail
+          if [ "$NETWORK" = "mainnet" ]; then
+            DATABASE_URL="${DATABASE_URL_MAINNET:-}"
+          else
+            DATABASE_URL="${DATABASE_URL_TESTNET:-}"
+          fi
+          if [ -z "$DATABASE_URL" ]; then
+            # A warning annotation, not a silent success: a skipped backup that
+            # reports green is indistinguishable from one that ran.
+            echo "::warning::DATABASE_URL_${NETWORK^^} is not set — skipping the ${NETWORK} backup."
+            echo "produced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${AGE_RECIPIENT:-}" ]; then
+            echo "AGE_RECIPIENT is required; refusing an unencrypted dump"
+            exit 1
+          fi
+          DATE_UTC=$(date -u +%Y%m%d)
+          OUT="lens-${NETWORK}-${DATE_UTC}.dump"
+          pg_dump --format=custom --no-owner --no-acl --dbname="$DATABASE_URL" --file="$OUT"
+          gzip -n "$OUT"
+          age -r "$AGE_RECIPIENT" -o "${OUT}.gz.age" "${OUT}.gz"
+          rm -f "$OUT" "${OUT}.gz"
+          # Belt and braces: never hand the upload step a cleartext file.
+          if [ -e "${OUT}.gz" ] || [ -e "$OUT" ]; then
+            echo "::error::cleartext dump still present after encryption — refusing to continue"
+            exit 1
+          fi
+          echo "produced=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.dump.outputs.produced == 'true'
+        with:
+          name: lens-${{ matrix.network }}-${{ github.run_id }}
+          # Ciphertext only. The glob is deliberately not *.dump.gz* — if
+          # encryption ever fails to run, this must find nothing and fail the
+          # job rather than quietly publish the cleartext dump.
+          path: lens-${{ matrix.network }}-*.dump.gz.age
+          retention-days: 14
+          if-no-files-found: error

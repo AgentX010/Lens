@@ -1,4 +1,4 @@
-import { config } from './config'
+import { config, activeNetwork } from './config'
 import { prisma } from './db'
 import type { WatchedPair, AssetId } from './types'
 
@@ -41,8 +41,9 @@ export function makePairKey(a: AssetId, b: AssetId): string {
 /** Persist a new pair to DB so it survives restarts. */
 export async function persistPair(pair: WatchedPair): Promise<void> {
   await prisma.pairConfig.upsert({
-    where: { pairKey: pair.pairKey },
+    where: { network_pairKey: { network: activeNetwork, pairKey: pair.pairKey } },
     create: {
+      network: activeNetwork,
       pairKey: pair.pairKey,
       assetACode: pair.assetA.code,
       assetAIssuer: pair.assetA.issuer,
@@ -55,7 +56,7 @@ export async function persistPair(pair: WatchedPair): Promise<void> {
 
 /** Load persisted pairs from DB and merge into the active registry. */
 export async function loadPersistedPairs(): Promise<void> {
-  const rows = await prisma.pairConfig.findMany()
+  const rows = await prisma.pairConfig.findMany({ where: { network: activeNetwork } })
   for (const row of rows) {
     const pair: WatchedPair = {
       assetA: { code: row.assetACode, issuer: row.assetAIssuer },

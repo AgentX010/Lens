@@ -1,48 +1,56 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import websocket from '@fastify/websocket'
 import { priceEmitter, PRICE_UPDATE, PriceUpdateEvent } from '../events'
-// @ts-ignore
-import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server'
-// @ts-ignore
-import { ExactStellarScheme } from '@x402/stellar/exact/server'
+import { activeNetwork, type NetworkName } from '../config'
+import { X402_NETWORK_LABEL, paymentAddressFor, getX402ResourceServer } from '../x402/network'
+import { resolveNetworkName } from '../middleware/network'
 import { fanOutManager } from '../ws/fanout'
 import { v4 as uuid } from 'uuid'
 
-const PAYMENT_ADDRESS = process.env.ORACLE_PAYMENT_ADDRESS
-const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://facilitator.stellar.org'
-const NETWORK = (process.env.STELLAR_NETWORK === 'mainnet' ? 'stellar:pubnet' : 'stellar:testnet') as string
+const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://x402.org/facilitator'
 
 export async function registerWebSocket(app: FastifyInstance) {
   await app.register(websocket)
-
-  let resourceServer: any = null
-  if (PAYMENT_ADDRESS) {
-    try {
-      const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL })
-      resourceServer = new x402ResourceServer(facilitatorClient)
-        .register(NETWORK as `${string}:${string}`, new ExactStellarScheme())
-      await resourceServer.initialize()
-    } catch (err) {
-      app.log.warn(`[ws] x402 init failed, streaming without payment gating: ${(err as Error).message}`)
-      resourceServer = null
-    }
-  }
 
   // @fastify/websocket v11: handler receives (socket, req) directly — no connection wrapper
   app.get('/ws', { websocket: true, config: { public: true } }, (socket: any, req: FastifyRequest) => {
     app.log.info('[ws] New connection attempt')
 
+    const rawNetwork = (req.query as any)?.network ?? (req.headers['x-network'] as string | undefined)
+    const resolved = resolveNetworkName(rawNetwork)
+    if (!resolved.ok) {
+      socket.send(JSON.stringify({ type: 'error', status: 400, message: resolved.error }))
+      socket.close()
+      return
+    }
+    const network: NetworkName = resolved.network
+
+    // This process only ingests and streams live prices for `activeNetwork`
+    // (see src/config.ts) — the underlying price events carry no network tag
+    // yet (that's the deeper aggregation-layer work), so a request for any
+    // other network can't be honestly served here.
+    if (network !== activeNetwork) {
+      socket.send(JSON.stringify({
+        type: 'error',
+        status: 400,
+        message: `This instance streams "${activeNetwork}" only; requested "${network}"`,
+      }))
+      socket.close()
+      return
+    }
+
+    const paymentAddress = paymentAddressFor(network)
     const paymentHeader = (req.headers['x-payment'] as string) || (req.query as any).payment
 
     const requirements = {
       scheme: 'exact' as const,
       price: '$0.50',
-      network: NETWORK,
-      payTo: PAYMENT_ADDRESS!,
+      network: X402_NETWORK_LABEL[network],
+      payTo: paymentAddress!,
     }
 
-    if (!PAYMENT_ADDRESS || !resourceServer) {
-      app.log.warn('[ws] x402 disabled (PAYMENT_ADDRESS missing or x402 init failed)')
+    if (!paymentAddress) {
+      app.log.warn('[ws] x402 disabled (no payment address configured for this network)')
     } else if (!paymentHeader) {
       socket.send(JSON.stringify({
         type: 'error',
@@ -53,7 +61,8 @@ export async function registerWebSocket(app: FastifyInstance) {
       socket.close()
       return
     } else {
-      verifyPayment(paymentHeader, requirements, resourceServer)
+      getX402ResourceServer(network, FACILITATOR_URL)
+        .then(resourceServer => verifyPayment(paymentHeader, requirements, resourceServer))
         .then(isValid => {
           if (!isValid) {
             socket.send(JSON.stringify({ type: 'error', message: 'Invalid payment' }))
@@ -80,14 +89,25 @@ export async function registerWebSocket(app: FastifyInstance) {
     const clientId = uuid()
     const unsubscribe = fanOutManager.register('*', {
       id: clientId,
-      send: (data: string) => {
-        if (socket.readyState === 1) { // OPEN
-          socket.send(data)
+      send: (data: string, cb?: (err?: Error | null) => void) => {
+        if (socket.readyState !== 1) { // OPEN
+          // Tell the fan-out rather than silently swallowing it: a socket that
+          // cannot be written to is a client that must be unregistered, not one
+          // whose messages quietly stop being counted.
+          cb?.(new Error(`socket not open (readyState ${socket.readyState})`))
+          return
         }
+        // The callback fires once the frame has actually been written, which is
+        // what FanOutManager counts as "sent" — see src/ws/fanout.ts.
+        socket.send(data, (err?: Error) => cb?.(err))
       },
-      close: () => {
-        socket.close()
+      close: (code?: number, reason?: string) => {
+        socket.close(code, reason)
       },
+      // Bytes queued for this socket and not yet written to the peer. This is
+      // the only backpressure signal available, and every threshold in
+      // FanOutManager is measured against it.
+      bufferedAmount: () => socket.bufferedAmount,
     })
 
     socket.on('close', () => {

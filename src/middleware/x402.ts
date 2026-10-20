@@ -1,18 +1,85 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { x402_payments_received_total } from '../metrics'
 import { checkQuota, recordUsage, parseCents, getQuotaConfig } from '../x402/metering'
+import { X402_NETWORK_LABEL, paymentAddressFor, isX402Configured, getX402ResourceServer } from '../x402/network'
 import fp from 'fastify-plugin'
-// @ts-ignore — @x402 packages ship ESM-only types incompatible with commonjs moduleResolution
-import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server'
-// @ts-ignore
-import { ExactStellarScheme } from '@x402/stellar/exact/server'
+import './network' // declares req.network on the FastifyRequest type
 
-// Routes gated by x402 and their prices
-const GATED_ROUTES: Record<string, { price: string; description: string }> = {
-  '/price': { price: '$0.10', description: 'Unified SDEX+AMM price with VWAP and best route' },
-  '/pools': { price: '$0.05', description: 'AMM liquidity pool reserves and spot prices' },
-  '/candles': { price: '$0.05', description: 'OHLCV candle data for trading charts' },
-  '/graphql': { price: '$0.10', description: 'GraphQL queries for price data and market information' },
+export interface GatedRoute {
+  readonly path: string
+  readonly method: 'GET' | 'POST'
+  readonly price: string
+  readonly description: string
+}
+
+// Routes gated by x402 and their prices, declared in deliberate order
+export const GATED_ROUTES: readonly GatedRoute[] = [
+  {
+    path: '/price',
+    method: 'GET',
+    price: '$0.10',
+    description: 'Unified SDEX+AMM price with VWAP and best route',
+  },
+  {
+    path: '/pools',
+    method: 'GET',
+    price: '$0.05',
+    description: 'AMM liquidity pool reserves and spot prices',
+  },
+  {
+    path: '/candles',
+    method: 'GET',
+    price: '$0.05',
+    description: 'OHLCV candle data for trading charts',
+  },
+  {
+    path: '/graphql',
+    method: 'POST',
+    price: '$0.10',
+    description: 'GraphQL queries for price data and market information',
+  },
+] as const
+
+/**
+ * Checks whether `routedPath` matches `prefix` at a path-segment boundary.
+ *
+ * Query strings and fragments are stripped so they cannot affect whether a route
+ * matches. A path matches at a segment boundary if each segment of the prefix
+ * matches the corresponding segment of the path.
+ *
+ * For example:
+ *   - '/price' matches '/price'
+ *   - '/price/test' matches '/price'
+ *   - '/pricing' does NOT match '/price' (segment 'pricing' !== 'price')
+ *   - '/poolsize' does NOT match '/pools' (segment 'poolsize' !== 'pools')
+ */
+export function matchesPathSegment(routedPath: string, prefix: string): boolean {
+  const cleanPath = routedPath.split('?')[0].split('#')[0]
+  const cleanPrefix = prefix.split('?')[0].split('#')[0]
+
+  const pathSegments = cleanPath.split('/').filter(Boolean)
+  const prefixSegments = cleanPrefix.split('/').filter(Boolean)
+
+  if (pathSegments.length < prefixSegments.length) {
+    return false
+  }
+
+  return prefixSegments.every((seg, i) => pathSegments[i] === seg)
+}
+
+/**
+ * Finds the first matching gated route definition for a given path and HTTP method.
+ * Matches on the routed path at a path-segment boundary, never on raw URLs with query strings.
+ */
+export function matchGatedRoute(
+  path: string,
+  method: string,
+  routes: readonly GatedRoute[] = GATED_ROUTES,
+): GatedRoute | undefined {
+  const upperMethod = method.toUpperCase()
+  return routes.find(
+    route => route.method.toUpperCase() === upperMethod && matchesPathSegment(path, route.path)
+  )
 }
 
 /**
@@ -21,39 +88,38 @@ const GATED_ROUTES: Record<string, { price: string; description: string }> = {
  */
 async function x402Plugin(app: FastifyInstance) {
   // Read at plugin init time (not module load) so tests can inject env vars before app.register()
-  const PAYMENT_ADDRESS = process.env.ORACLE_PAYMENT_ADDRESS
-  const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://facilitator.stellar.org'
-  const NETWORK = (process.env.STELLAR_NETWORK === 'mainnet' ? 'stellar:pubnet' : 'stellar:testnet') as string
+  const FACILITATOR_URL = process.env.X402_FACILITATOR_URL ?? 'https://x402.org/facilitator'
 
-  if (!PAYMENT_ADDRESS) {
+  if (!isX402Configured()) {
     app.log.warn('[oracle] ORACLE_PAYMENT_ADDRESS not set — x402 gating disabled')
     return
   }
 
-  const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL })
-  const resourceServer: any = new x402ResourceServer(facilitatorClient)
-    .register(NETWORK as `${string}:${string}`, new ExactStellarScheme())
-
-  await resourceServer.initialize()
   app.log.info('[oracle] x402 payment gating enabled')
 
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Gate GET requests on matching path prefixes, or POST requests to /graphql
-    const matchedRoute = Object.keys(GATED_ROUTES).find(prefix => {
-      const pathMatches = req.url.startsWith(prefix)
-      const methodAllowed = prefix === '/graphql' ? req.method === 'POST' : req.method === 'GET'
-      return pathMatches && methodAllowed
-    })
+    // Gate requests matching declared gated routes at path-segment boundaries
+    const routedPath = req.routeOptions?.url ?? req.url
+    const matchedRoute = matchGatedRoute(routedPath, req.method)
     if (!matchedRoute) return
 
-    const { price, description } = GATED_ROUTES[matchedRoute]
+    // Falls back to testnet when the network selector plugin isn't
+    // registered (e.g. isolated unit tests that build the app directly).
+    const network = req.network ?? 'testnet'
+    const paymentAddress = paymentAddressFor(network)
+    if (!paymentAddress) {
+      reply.status(402).send({ error: `x402 payments are not configured for network "${network}"` })
+      return
+    }
+
+    const { price, description } = matchedRoute
     const paymentHeader = req.headers['x-payment'] as string | undefined
 
     const requirements = {
       scheme: 'exact' as const,
       price,
-      network: NETWORK,
-      payTo: PAYMENT_ADDRESS,
+      network: X402_NETWORK_LABEL[network],
+      payTo: paymentAddress,
     }
 
     // No payment header — return 402 with requirements
@@ -76,6 +142,7 @@ async function x402Plugin(app: FastifyInstance) {
         payload = JSON.parse(paymentHeader)
       }
 
+      const resourceServer = await getX402ResourceServer(network, FACILITATOR_URL)
       const result = await resourceServer.verify(payload, requirements)
       if (!result.isValid) {
         reply.status(402).send({ error: 'Payment invalid', reason: result.invalidReason })

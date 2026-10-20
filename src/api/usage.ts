@@ -14,6 +14,11 @@ function isAdminAuthorized(req: FastifyRequest): boolean {
   // Constant-time comparison (timingSafeEqual requires equal-length buffers).
   return a.length === b.length && require('crypto').timingSafeEqual(a, b)
 }
+import type { FastifyInstance, FastifyReply } from 'fastify'
+import fp from 'fastify-plugin'
+import { getUsageSummary, getAllUsageSummaries } from '../x402/metering'
+import { admin_auth_failures_total, api_key_auth_failures_total } from '../metrics'
+import { isAdminAuthorized } from './auth'
 
 export async function registerUsageRoutes(app: FastifyInstance) {
   app.get<{ Params: { keyId: string } }>(
@@ -23,6 +28,10 @@ export async function registerUsageRoutes(app: FastifyInstance) {
       if (!isAdminAuthorized(req)) {
         return reply.status(401).send({
           error: 'Unauthorized',
+        admin_auth_failures_total.inc()
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'admin_unauthorized',
           message: 'Provide a valid X-Admin-Token header.',
         })
       }
@@ -39,6 +48,10 @@ export async function registerUsageRoutes(app: FastifyInstance) {
       if (!isAdminAuthorized(req)) {
         return reply.status(401).send({
           error: 'Unauthorized',
+        admin_auth_failures_total.inc()
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'admin_unauthorized',
           message: 'Provide a valid X-Admin-Token header.',
         })
       }
@@ -54,6 +67,10 @@ export async function registerUsageRoutes(app: FastifyInstance) {
       if (!apiKey) {
         return reply.status(401).send({
           error: 'Unauthorized',
+        api_key_auth_failures_total.inc({ reason: 'missing' })
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'missing',
           message: 'Missing API key. Provide an Authorization: Bearer <key> header.',
         })
       }

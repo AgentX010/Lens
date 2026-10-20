@@ -1,14 +1,12 @@
 import 'dotenv/config'
 import { execSync } from 'child_process'
-import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
-import cors from '@fastify/cors'
-import compress from '@fastify/compress'
-import rateLimit from '@fastify/rate-limit'
-import { config } from './config'
+import { config, type NetworkName } from './config'
+import { getEnabledNetworks } from './network/enabledNetworks'
+import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
 import { registerRESTRoutes } from './api/rest'
@@ -24,29 +22,49 @@ import { registerApiKeyAuth } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
 import { registerUsageRoutes } from './api/usage'
 import { registerPriceRoutes } from './routes/price'
+import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
-import { startSDEXIngester } from './ingesters/sdex'
-import { startAMMIngester } from './ingesters/amm'
-import { startSoroswapIngester } from './ingesters/soroswap'
+import { venueAdapters, startVenueAdapter } from './ingest/venues'
 import { startSnapshotIngester } from './ingesters/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
-import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention } from './jobs/snapshotRetention'
+import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
+import {
+  createPricePointsPartitionQueue,
+  startPricePointsPartitionWorker,
+  schedulePricePointsPartitionMaintenance,
+  runPricePointsMaintenance,
+  PRICE_POINTS_RETENTION_DAYS,
+} from './jobs/pricePointsPartitionJob'
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
-import { getMetrics } from './metrics'
+import { markBootComplete } from './health'
+
+const log = createLogger('startup')
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
-  console.log('[lens] Running database migrations…')
+  log.info('running database migrations')
   execSync('node node_modules/prisma/build/index.js db push --accept-data-loss', { stdio: 'inherit' })
-  console.log('[lens] Database ready.')
+  log.info('database ready')
 
   // ── Connect dependencies ──────────────────────────────────────────────────
-  await redis.connect()
-  console.log('[lens] Redis connected')
+  // Redis is a cache and a job broker, not a source of truth: reads fall back
+  // to Postgres (see getCachedPrice), writes are best-effort, and all three
+  // background workers below are already registered inside their own try/catch
+  // for exactly this case. Connecting eagerly is still worth doing so a
+  // healthy deploy fails fast and loudly if the URL is wrong — but letting the
+  // rejection escape turned a dead cache into a dead API, and the process
+  // exited before ever reaching app.listen(). Prices stay served from the
+  // database, uncached, until Redis comes back.
+  try {
+    await redis.connect()
+    log.info('redis connected')
+  } catch (err) {
+    log.warn({ err }, 'redis unavailable, continuing without cache')
+  }
 
   await pgPool.connect()
-  console.log('[lens] PostgreSQL connected')
+  log.info('postgresql connected')
 
   // ── Load persisted runtime pairs ──────────────────────────────────────────
   await loadPersistedPairs()
@@ -120,58 +138,168 @@ async function main() {
     reply.type('text/plain; version=0.0.4; charset=utf-8')
     return await getMetrics()
   })
+  // All plugin and route wiring lives in buildApp() (src/app.ts) so tests can
+  // boot the exact same route surface without the connections and background
+  // workers started below.
+  const app = await buildApp()
 
   await app.listen({ port: config.api.port, host: config.api.host })
-  console.log(`[lens] API listening on http://${config.api.host}:${config.api.port}`)
-  console.log(`[lens] GraphiQL at http://localhost:${config.api.port}/graphiql`)
+  log.info({ url: `http://${config.api.host}:${config.api.port}` }, 'API listening')
+  log.info({ url: `http://localhost:${config.api.port}/graphiql` }, 'GraphiQL available')
 
   // ── WebSocket fan-out (non-blocking — requires Redis for multi-instance) ─
   try {
     await fanOutManager.initialize()
-    console.log('[lens] WebSocket fan-out manager initialized')
+    log.info('websocket fan-out manager initialized')
   } catch (err) {
-    console.warn('[lens] WebSocket fan-out init skipped:', (err as Error).message)
+    log.warn({ err }, 'websocket fan-out init skipped')
   }
 
   // ── Aggregate refresh worker (non-blocking — requires Redis) ─────────────
-  try {
-    const queue = createAggregateQueue()
-    startAggregateWorker()
-    await scheduleAggregateRefresh(queue)
-    console.log('[lens] Aggregate refresh worker started')
-  } catch (err) {
-    console.warn('[lens] Aggregate refresh worker skipped (Redis unavailable):', (err as Error).message)
+  // BullMQ opens its own ioredis connections, separate from ./redis and
+  // without our error handler on them. If scheduling fails they are still
+  // live, reconnecting forever and logging "[ioredis] Unhandled error event"
+  // on every attempt — so close whatever got created before giving up.
+  //
+  // One queue + worker per enabled network: a single pair of them would only
+  // ever write price_aggregates for whichever network it was pinned to, and
+  // /price/*/history and /screener would stay empty for the other.
+  {
+    const started: NetworkName[] = []
+    for (const network of getEnabledNetworks()) {
+      let queue: ReturnType<typeof createAggregateQueue> | undefined
+      let worker: ReturnType<typeof startAggregateWorker> | undefined
+      try {
+        queue = createAggregateQueue(network)
+        worker = startAggregateWorker(network)
+        await scheduleAggregateRefresh(queue, network)
+        started.push(network)
+      } catch (err) {
+        log.warn({ network, err }, 'aggregate refresh worker skipped (redis unavailable)')
+        await Promise.allSettled([queue?.close(), worker?.close()])
+      }
+    }
+    if (started.length > 0) {
+      log.info({ networks: started }, 'aggregate refresh worker started')
+    }
   }
 
-  // ── Snapshot retention worker (non-blocking — requires Redis) ─────────────
-  try {
-    const retentionQueue = createSnapshotRetentionQueue()
-    startSnapshotRetentionWorker()
-    await scheduleSnapshotRetention(retentionQueue)
-    console.log('[lens] Snapshot retention worker started')
-  } catch (err) {
-    console.warn('[lens] Snapshot retention worker skipped (Redis unavailable):', (err as Error).message)
+  // ── Snapshot retention ────────────────────────────────────────────────────
+  // price_snapshots is append-only and unbounded, so pruning it is a data
+  // lifecycle concern, not a caching one. BullMQ is only how the prune gets
+  // scheduled — losing Redis must not mean losing retention, because the
+  // failure is silent and the bill arrives as a full disk weeks later.
+  //
+  // So: prune once here, unconditionally, then try to install the hourly
+  // schedule. If Redis is away, fall back to a plain timer that does the same
+  // work in-process.
+  const safePrune = async () => {
+    try {
+      const counts = await pruneAllNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) {
+          log.info({ network, pruned, retentionDays: SNAPSHOT_RETENTION_DAYS }, 'pruned snapshots older than retention window')
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'snapshot prune failed')
+    }
+  }
+
+  await safePrune()
+
+  {
+    let retentionQueue: ReturnType<typeof createSnapshotRetentionQueue> | undefined
+    let retentionWorker: ReturnType<typeof startSnapshotRetentionWorker> | undefined
+    try {
+      retentionQueue = createSnapshotRetentionQueue()
+      retentionWorker = startSnapshotRetentionWorker()
+      await scheduleSnapshotRetention(retentionQueue)
+      log.info('snapshot retention worker started')
+    } catch (err) {
+      log.warn({ err }, 'snapshot retention worker skipped (redis unavailable)')
+      log.warn('falling back to an in-process hourly prune')
+      await Promise.allSettled([retentionQueue?.close(), retentionWorker?.close()])
+      setInterval(() => { void safePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
+  // ── Price points partition maintenance & retention ────────────────────────
+  // price_points is range-partitioned by timestamp. We pre-create future partitions
+  // ahead of need so ingesters never fail on unmapped timestamp ranges. Dropping
+  // expired partitions is opt-in via PRICE_POINTS_DROP_EXPIRED=true (default: off)
+  // to safeguard raw historical records until rollups are complete (#231).
+  const safeMaintainPartitions = async () => {
+    try {
+      const result = await runPricePointsMaintenance()
+      if (result.created.length > 0) {
+        log.info({ count: result.created.length }, 'pre-created price_points partitions')
+      }
+      if (result.dropped.length > 0) {
+        log.info(
+          { count: result.dropped.length, retentionDays: PRICE_POINTS_RETENTION_DAYS },
+          'dropped expired price_points partitions',
+        )
+      }
+    } catch (err) {
+      log.error({ err }, 'price_points partition maintenance failed')
+    }
+  }
+
+  await safeMaintainPartitions()
+
+  {
+    let partitionQueue: ReturnType<typeof createPricePointsPartitionQueue> | undefined
+    let partitionWorker: ReturnType<typeof startPricePointsPartitionWorker> | undefined
+    try {
+      partitionQueue = createPricePointsPartitionQueue()
+      partitionWorker = startPricePointsPartitionWorker()
+      await schedulePricePointsPartitionMaintenance(partitionQueue)
+      log.info('price_points partition worker started')
+    } catch (err) {
+      log.warn({ err }, 'price_points partition worker unavailable; falling back to hourly in-process maintenance')
+      await Promise.allSettled([partitionQueue?.close(), partitionWorker?.close()])
+      setInterval(() => { void safeMaintainPartitions() }, 60 * 60 * 1000).unref()
+    }
   }
 
   // ── Ingesters (run in background — infinite loops) ────────────────────────
-  // Each ingester is independently fault-isolated via restartIngester.
-  // A crash in the Soroswap ingester cannot take down SDEX or AMM.
-  console.log('[lens] Starting ingesters...')
-  const restartIngester = (name: string, fn: () => Promise<void>) => {
+  // Each ingester is independently fault-isolated via restartIngester, keyed by
+  // the (venue, network) pair: a crash in, say, the Soroswap ingester on
+  // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
+  // ingesters running on testnet.
+  const restartIngester = (name: string, network: NetworkName, fn: () => Promise<void>) => {
     fn().catch(err => {
-      console.error(`[lens] ${name} ingester crashed, restarting in 10s:`, err.message)
-      setTimeout(() => restartIngester(name, fn), 10_000)
+      log.error({ ingester: name, network, err }, 'ingester crashed; restarting in 10s')
+      setTimeout(() => restartIngester(name, network, fn), 10_000)
     })
   }
-  restartIngester('SDEX', startSDEXIngester)
-  restartIngester('AMM', startAMMIngester)
-  restartIngester('Soroswap', startSoroswapIngester)
-  restartIngester('Snapshot', startSnapshotIngester)
 
-  console.log(`[lens] Watching ${getActivePairs().length} pairs: ${getActivePairs().map(p => p.pairKey).join(', ')}`)
+  const enabledNetworks = getEnabledNetworks()
+  log.info({ networks: enabledNetworks }, 'starting ingesters')
+  for (const network of enabledNetworks) {
+    for (const adapter of venueAdapters) {
+      restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
+    }
+    restartIngester('Snapshot', network, () => startSnapshotIngester(network))
+  }
+
+  log.info(
+    { count: getActivePairs().length, pairs: getActivePairs().map(p => p.pairKey) },
+    'watching pairs'
+  )
+
+  // ── Ready ──────────────────────────────────────────────────────────────────
+  // Last, and only once every ingester above is running. `app.listen()` happens
+  // part-way through this function, so between listening and here the process
+  // accepts requests it cannot yet answer correctly. `/ready` stays unhealthy
+  // until this line, which is what keeps a starting instance out of the load
+  // balancer without making `/live` fail (a starting process should be held out
+  // of rotation, not killed).
+  markBootComplete()
 }
 
 main().catch(err => {
-  console.error('[lens] Fatal startup error:', err)
+  log.error({ err }, 'fatal startup error')
   process.exit(1)
 })

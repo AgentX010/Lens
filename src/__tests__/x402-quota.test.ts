@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const PAYMENT_ADDRESS = 'GPAYMENTADDRESS123456789012345678901234567890123456789012'
 
@@ -39,6 +40,7 @@ vi.mock('@x402/stellar/exact/server', () => ({
 }))
 
 vi.mock('../../x402/metering', () => ({
+vi.mock('../x402/metering', () => ({
   checkQuota: vi.fn(),
   recordUsage: vi.fn(),
   parseCents: vi.fn((price: string) => {
@@ -53,6 +55,11 @@ vi.mock('../../redis', () => ({
 }))
 
 vi.mock('../../db', () => ({
+vi.mock('../redis', () => ({
+  redis: { get: vi.fn(), multi: vi.fn().mockReturnThis(), on: vi.fn() },
+}))
+
+vi.mock('../db', () => ({
   prisma: {
     apiKey: {
       findUnique: vi.fn(),
@@ -62,6 +69,8 @@ vi.mock('../../db', () => ({
 
 import { registerX402 } from '../../middleware/x402'
 import { checkQuota, recordUsage, getQuotaConfig } from '../../x402/metering'
+import { registerX402 } from '../middleware/x402'
+import { checkQuota, recordUsage, getQuotaConfig } from '../x402/metering'
 import Fastify from 'fastify'
 
 const mockCheckQuota = checkQuota as any
@@ -80,11 +89,32 @@ beforeEach(() => {
   mockInitialize.mockReset().mockResolvedValue(undefined)
 })
 
+const ENV_KEYS = ['ORACLE_PAYMENT_ADDRESS', 'STELLAR_NETWORK', 'REQUIRE_API_KEY'] as const
+const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {}
+beforeEach(() => {
+  for (const key of ENV_KEYS) originalEnv[key] = process.env[key]
+})
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (originalEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = originalEnv[key]
+  }
+})
+
 async function buildAppWithAuth() {
   process.env.ORACLE_PAYMENT_ADDRESS = PAYMENT_ADDRESS
   process.env.STELLAR_NETWORK = 'testnet'
   process.env.REQUIRE_API_KEY = 'false'
   const app = Fastify({ logger: false })
+  // Simulate the auth layer (src/api/auth.ts) that decorates req.apiKey from the
+  // Bearer token. It runs on onRequest — before x402's preHandler — so quota
+  // enforcement (which is keyed off req.apiKey.id) is actually exercised here.
+  app.decorateRequest('apiKey', undefined)
+  app.addHook('onRequest', async (req) => {
+    if (req.headers['authorization']) {
+      ;(req as any).apiKey = { id: 'key-id' }
+    }
+  })
   await app.register(registerX402)
   app.get('/price/test', async () => ({ ok: true }))
   app.get('/public', async () => ({ ok: true }))

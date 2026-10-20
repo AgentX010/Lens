@@ -8,6 +8,10 @@ jobs:
   publish:
     name: Generate and publish OpenAPI
     runs-on: ubuntu-latest
+    # peaceiris/actions-gh-pages pushes to the gh-pages branch; the default
+    # GITHUB_TOKEN is read-only, which returned 403. Grant write access.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
