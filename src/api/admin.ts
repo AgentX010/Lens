@@ -19,6 +19,21 @@ interface CreateKeyBody {
   overagePolicy?: 'block' | 'charge_402' | 'allow_overage'
 }
 
+interface ListKeysQuery {
+  limit?: string
+  offset?: string
+  revoked?: string
+}
+
+const MAX_KEY_PAGE_SIZE = 100
+
+function parsePageValue(value: string | undefined, fallback: number, maximum: number): number | null {
+  if (value === undefined) return fallback
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null
+}
+
 /**
  * Registers admin-only endpoints for minting and revoking API keys.
  *
@@ -29,6 +44,70 @@ interface CreateKeyBody {
  * them; they enforce their own `ADMIN_TOKEN` check instead.
  */
 export async function registerAdminRoutes(app: FastifyInstance) {
+  app.get<{ Querystring: ListKeysQuery }>(
+    '/admin/keys',
+    { config: { public: true } },
+    async (req: FastifyRequest<{ Querystring: ListKeysQuery }>, reply: FastifyReply) => {
+      if (!isAdminAuthorized(req)) {
+        admin_auth_failures_total.inc()
+        return reply.status(401).send({
+          error: 'Unauthorized',
+          code: 'admin_unauthorized',
+          message: 'Provide a valid X-Admin-Token header.',
+        })
+      }
+
+      const limit = parsePageValue(req.query.limit, 50, MAX_KEY_PAGE_SIZE)
+      const offset = parsePageValue(req.query.offset, 0, Number.MAX_SAFE_INTEGER)
+      const revoked = req.query.revoked ?? 'false'
+      if (limit === null || limit < 1 || offset === null || !['true', 'false'].includes(revoked)) {
+        return reply.status(400).send({
+          error: 'Invalid pagination or revoked filter. Use limit (1-100), offset (0 or greater), and revoked=true|false.',
+        })
+      }
+
+      const where = revoked === 'true' ? { revokedAt: { not: null } } : { revokedAt: null }
+      const [records, total] = await Promise.all([
+        prisma.apiKey.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: offset,
+          take: limit,
+          // Never select the stored hash; it is not needed to manage a key.
+          select: {
+            id: true,
+            label: true,
+            ratePerMin: true,
+            ratePerDay: true,
+            monthlyQuotaCents: true,
+            dailyQuotaCents: true,
+            overagePolicy: true,
+            createdAt: true,
+            revokedAt: true,
+            expiresAt: true,
+          },
+        }),
+        prisma.apiKey.count({ where }),
+      ])
+
+      return reply.send({
+        keys: records.map(record => ({
+          id: record.id,
+          label: record.label,
+          ratePerMin: record.ratePerMin,
+          ratePerDay: record.ratePerDay,
+          monthlyQuotaCents: record.monthlyQuotaCents,
+          dailyQuotaCents: record.dailyQuotaCents,
+          overagePolicy: record.overagePolicy,
+          createdAt: record.createdAt,
+          revokedAt: record.revokedAt,
+          expiresAt: record.expiresAt,
+        })),
+        pagination: { limit, offset, total },
+      })
+    },
+  )
+
   app.post<{ Body: CreateKeyBody }>(
     '/admin/keys',
     { config: { public: true } },
