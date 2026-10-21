@@ -53,6 +53,7 @@ vi.mock('../config', () => ({
 
 import { registerRESTRoutes } from '../api/rest'
 import { registerNetworkSelector } from '../middleware/network'
+import { recordCrash, resetIngesterState } from '../ingester/restart'
 
 async function buildApp() {
   const app = Fastify({ logger: false })
@@ -71,6 +72,7 @@ const rowsByNetwork: Record<string, { last_ledger: number; last_processed_at: Da
 describe('GET /status', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetIngesterState()
     // Return a row only for the network the query actually filtered on; an
     // unfiltered SELECT would therefore hand a network the other one's row.
     mockQuery.mockImplementation(async (_sql: string, params: unknown[]) => ({
@@ -173,6 +175,7 @@ describe('GET /status', () => {
   })
 
   it('returns nulls — never another network\'s data — when a network has not ingested', async () => {
+  it('returns nulls — never another network \'s data — when a network has not ingested', async () => {
     mockQuery.mockResolvedValue({ rows: [] })
     const app = await buildApp()
 
@@ -196,5 +199,21 @@ describe('GET /status', () => {
 
     expect(res.statusCode).toBe(400)
     expect(mockQuery).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the last crash per ingester and network', async () => {
+    recordCrash('prices', 'mainnet', new Error('boom'))
+    const app = await buildApp()
+
+    const res = await app.inject({ method: 'GET', url: '/status?network=mainnet' })
+    const body = res.json()
+
+    expect(body.network).toBe('mainnet')
+    expect(body.crashes).toBeDefined()
+    expect(body.crashes.length).toBe(1)
+    expect(body.crashes[0].name).toBe('prices')
+    expect(body.crashes[0].network).toBe('mainnet')
+    expect(body.crashes[0].message).toBe('boom')
+    expect(typeof body.crashes[0].at).toBe('string')
   })
 })
