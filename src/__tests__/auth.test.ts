@@ -20,9 +20,16 @@ import {
   hashApiKey,
   extractBearer,
   lookupApiKey,
+  invalidateApiKey,
+  clearApiKeyCache,
 } from '../api/auth'
 import { registerAdminRoutes, generateApiKey } from '../api/admin'
-import { register, api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
+import {
+  register,
+  api_key_auth_failures_total,
+  admin_auth_failures_total,
+  api_key_cache_lookups_total,
+} from '../metrics'
 
 const mockFindUnique = prisma.apiKey.findUnique as unknown as ReturnType<typeof vi.fn>
 const mockCreate = prisma.apiKey.create as unknown as ReturnType<typeof vi.fn>
@@ -58,6 +65,9 @@ beforeEach(() => {
   mockFindUnique.mockReset()
   mockCreate.mockReset()
   mockUpdate.mockReset()
+  // The lookup cache is module-global; a stale entry from a previous test
+  // would otherwise mask a different mock for the same key.
+  clearApiKeyCache()
 })
 
 describe('hashApiKey / extractBearer', () => {
@@ -246,6 +256,96 @@ describe('per-key rate quotas', () => {
     })
     const b1 = await app.inject({ method: 'GET', url: '/price/test', headers: { authorization: 'Bearer b' } })
     expect(b1.statusCode).toBe(200)
+  })
+})
+
+describe('API key lookup cache (Issue #495)', () => {
+  const validRecord = {
+    id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, revokedAt: null,
+  }
+
+  it('serves a repeated request for the same key from cache (no Postgres per request)', async () => {
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    const app = await buildAuthedApp()
+    const headers = { authorization: 'Bearer good' }
+    const r1 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    const r2 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    const r3 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    expect([r1.statusCode, r2.statusCode, r3.statusCode]).toEqual([200, 200, 200])
+    // Three requests, one database lookup.
+    expect(mockFindUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches negative lookups so invalid keys do not hit Postgres per attempt', async () => {
+    mockFindUnique.mockResolvedValue(null)
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(mockFindUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-checks expiry on a cache hit, so the TTL never outlives the key', async () => {
+    vi.useFakeTimers()
+    try {
+      mockFindUnique.mockResolvedValue({
+        ...validRecord, expiresAt: new Date(Date.now() + 5_000),
+      })
+      expect(await lookupApiKey('soon')).not.toBeNull()
+      // Move past the key's own expiry but stay well within the cache TTL.
+      vi.advanceTimersByTime(6_000)
+      expect(await lookupApiKey('soon')).toBeNull()
+      // Still served from cache — expiry was re-evaluated, not re-queried.
+      expect(mockFindUnique).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops a revoked key immediately on the instance that handles the revoke', async () => {
+    const token = 'to-be-revoked'
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    const app = await buildAuthedApp()
+    const headers = { authorization: `Bearer ${token}` }
+    expect((await app.inject({ method: 'GET', url: '/price/test', headers })).statusCode).toBe(200)
+
+    // Revoke: Postgres now reports it revoked, and the revoke path drops the
+    // cache entry (as admin.ts does after the UPDATE).
+    mockFindUnique.mockResolvedValue({ ...validRecord, revokedAt: new Date() })
+    invalidateApiKey(hashApiKey(token))
+
+    const res = await app.inject({ method: 'GET', url: '/price/test', headers })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe('revoked')
+  })
+
+  it('stops a revoked key within the cache TTL even without explicit invalidation', async () => {
+    vi.useFakeTimers()
+    try {
+      mockFindUnique.mockResolvedValue({ ...validRecord })
+      expect(await lookupApiKey('cross-instance')).not.toBeNull()
+
+      // Revoked on another instance: our cache is not invalidated here.
+      mockFindUnique.mockResolvedValue({ ...validRecord, revokedAt: new Date() })
+      vi.advanceTimersByTime(29_000) // within the 30s TTL — still trusted
+      expect(await lookupApiKey('cross-instance')).not.toBeNull()
+      vi.advanceTimersByTime(2_000) // past the TTL — re-read, now rejected
+      expect(await lookupApiKey('cross-instance')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('exports cache lookups as a hit/miss metric', async () => {
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    await lookupApiKey('metric-key') // miss → Postgres
+    await lookupApiKey('metric-key') // hit → cache
+    const output = await register.metrics()
+    expect(output).toContain('api_key_cache_lookups_total')
+    const values = (await api_key_cache_lookups_total.get()).values
+    const hit = values.find((v) => v.labels.result === 'hit')?.value ?? 0
+    const miss = values.find((v) => v.labels.result === 'miss')?.value ?? 0
+    expect(hit).toBeGreaterThanOrEqual(1)
+    expect(miss).toBeGreaterThanOrEqual(1)
   })
 })
 

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'crypto'
 import { prisma } from '../db'
 import { admin_auth_failures_total } from '../metrics'
-import { hashApiKey, isAdminAuthorized } from './auth'
+import { hashApiKey, isAdminAuthorized, invalidateApiKey } from './auth'
 
 /** Generates a new opaque API key with a recognizable `lens_` prefix. */
 export function generateApiKey(): string {
@@ -110,6 +110,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         where: { id },
         data: { revokedAt: new Date() },
       })
+
+      // Drop the cached lookup so the revoke takes effect immediately on this
+      // instance (Issue #495). Other instances pick it up within the cache TTL.
+      invalidateApiKey(existing.hash)
 
       return reply.status(200).send({ id, revoked: true })
     },
