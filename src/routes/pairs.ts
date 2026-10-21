@@ -11,6 +11,7 @@ import {
   slicePage,
 } from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { admin_auth_failures_total } from '../metrics'
 
 export async function registerPairsRoutes(app: FastifyInstance) {
   // GET /pairs?cursor=&limit= — list active pairs with latest price metadata
@@ -100,7 +101,12 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     const ADMIN_API_KEY = process.env.ADMIN_API_KEY
     const key = req.headers['x-admin-key'] ?? req.headers['authorization']?.replace(/^Bearer /, '')
     if (!ADMIN_API_KEY || key !== ADMIN_API_KEY) {
-      return reply.status(401).send({ error: 'Unauthorized — provide a valid X-Admin-Key header' })
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide valid admin authentication.',
+      })
     }
 
     const { assetA: assetAStr, assetB: assetBStr } = req.body ?? {}
