@@ -61,5 +61,11 @@ export async function registerUsageRoutes(app: FastifyInstance) {
       const summary = await getUsageSummary(apiKey.id)
       return reply.send(summary)
     }
-  )
+    // The key presented determines the answer — never a parameter.
+    const summary = await getUsageSummary(apiKey.id)
+    return reply.send(summary)
+  }
+
+  app.get('/usage/me', handleCallerUsage)
+  app.get('/usage', handleCallerUsage)
 }

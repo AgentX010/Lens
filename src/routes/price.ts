@@ -48,6 +48,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
     }
   }>(
     '/price/twap/:assetA/:assetB',
+    { config: { scope: 'read:prices' } },
     async (req, reply) => {
       const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
@@ -100,6 +101,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
     }
   }>(
     '/price/vwap/:assetA/:assetB',
+    { config: { scope: 'read:prices' } },
     async (req, reply) => {
       const log = req.log.child({ component: 'route:price' })
       const { assetA, assetB } = req.params
