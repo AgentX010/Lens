@@ -210,7 +210,7 @@ export async function getAggregatedPrice(
     confidence = 'low'
   }
 
-  const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= STALENESS_THRESHOLD_SECONDS
+  const stale = lastTradeAgeSeconds !== null && lastTradeAgeSeconds >= staleThreshold
 
   return {
     price: vwap1h || vwap24h || ammPrice || 0,
