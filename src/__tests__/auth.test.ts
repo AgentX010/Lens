@@ -27,13 +27,20 @@ import {
   extractBearer,
   lookupApiKey,
   hasScope,
+  invalidateApiKey,
+  clearApiKeyCache,
   recordApiKeyLastUsed,
   getKeyLastUsedThrottleMs,
   resetApiKeyLastUsedThrottle,
   DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS,
 } from '../api/auth'
 import { registerAdminRoutes, generateApiKey } from '../api/admin'
-import { register, api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
+import {
+  register,
+  api_key_auth_failures_total,
+  admin_auth_failures_total,
+  api_key_cache_lookups_total,
+} from '../metrics'
 
 const mockFindUnique = prisma.apiKey.findUnique as unknown as ReturnType<typeof vi.fn>
 const mockFindMany = prisma.apiKey.findMany as unknown as ReturnType<typeof vi.fn>
@@ -75,6 +82,9 @@ beforeEach(() => {
   mockFindMany.mockReset()
   mockCreate.mockReset()
   mockUpdate.mockReset()
+  // The lookup cache is module-global; a stale entry from a previous test
+  // would otherwise mask a different mock for the same key.
+  clearApiKeyCache()
 })
 
 describe('hashApiKey / extractBearer', () => {
@@ -381,6 +391,118 @@ describe('per-key rate quotas', () => {
     })
     const b1 = await app.inject({ method: 'GET', url: '/price/test', headers: { authorization: 'Bearer b' } })
     expect(b1.statusCode).toBe(200)
+  })
+})
+
+describe('API key lookup cache (Issue #495)', () => {
+  const validRecord = {
+    id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, revokedAt: null,
+  }
+
+  it('serves a repeated request for the same key from cache (no Postgres per request)', async () => {
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    const app = await buildAuthedApp()
+    const headers = { authorization: 'Bearer good' }
+    const r1 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    const r2 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    const r3 = await app.inject({ method: 'GET', url: '/price/test', headers })
+    expect([r1.statusCode, r2.statusCode, r3.statusCode]).toEqual([200, 200, 200])
+    // Three requests, one database lookup.
+    expect(mockFindUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches negative lookups so invalid keys do not hit Postgres per attempt', async () => {
+    mockFindUnique.mockResolvedValue(null)
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(await lookupApiKey('bad')).toBeNull()
+    expect(mockFindUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-checks expiry on a cache hit, so the TTL never outlives the key', async () => {
+    vi.useFakeTimers()
+    try {
+      mockFindUnique.mockResolvedValue({
+        ...validRecord, expiresAt: new Date(Date.now() + 5_000),
+      })
+      expect(await lookupApiKey('soon')).not.toBeNull()
+      // Move past the key's own expiry but stay well within the cache TTL.
+      vi.advanceTimersByTime(6_000)
+      expect(await lookupApiKey('soon')).toBeNull()
+      // Still served from cache — expiry was re-evaluated, not re-queried.
+      expect(mockFindUnique).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops a revoked key immediately on the instance that handles the revoke', async () => {
+    const token = 'to-be-revoked'
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    const app = await buildAuthedApp()
+    const headers = { authorization: `Bearer ${token}` }
+    expect((await app.inject({ method: 'GET', url: '/price/test', headers })).statusCode).toBe(200)
+
+    // Revoke: Postgres now reports it revoked, and the revoke path drops the
+    // cache entry (as admin.ts does after the UPDATE).
+    mockFindUnique.mockResolvedValue({ ...validRecord, revokedAt: new Date() })
+    invalidateApiKey(hashApiKey(token))
+
+    const res = await app.inject({ method: 'GET', url: '/price/test', headers })
+    expect(res.statusCode).toBe(401)
+    expect(res.json().code).toBe('revoked')
+  })
+
+  it('stops a revoked key within the cache TTL even without explicit invalidation', async () => {
+    vi.useFakeTimers()
+    try {
+      mockFindUnique.mockResolvedValue({ ...validRecord })
+      expect(await lookupApiKey('cross-instance')).not.toBeNull()
+
+      // Revoked on another instance: our cache is not invalidated here.
+      mockFindUnique.mockResolvedValue({ ...validRecord, revokedAt: new Date() })
+      vi.advanceTimersByTime(29_000) // within the 30s TTL — still trusted
+      expect(await lookupApiKey('cross-instance')).not.toBeNull()
+      vi.advanceTimersByTime(2_000) // past the TTL — re-read, now rejected
+      expect(await lookupApiKey('cross-instance')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps scopes on a cache hit, so a scoped route still works', async () => {
+    // The cached value carries the whole ApiKeyContext, scopes included. If it
+    // did not, a hit would authenticate with `scopes: undefined`, hasScope
+    // would refuse, and every scoped route would 403 for the length of the TTL
+    // — which reads as an authorization bug, not a caching one.
+    mockFindUnique.mockResolvedValue({ ...validRecord, scopes: ['read:prices'] })
+
+    const app = Fastify()
+    await app.register(registerApiKeyAuth)
+    app.get('/scoped', { config: { scope: 'read:prices' } }, async () => ({ ok: true }))
+    await app.ready()
+
+    const headers = { authorization: 'Bearer scoped-key' }
+    const first = await app.inject({ method: 'GET', url: '/scoped', headers })
+    const second = await app.inject({ method: 'GET', url: '/scoped', headers })
+
+    expect(first.statusCode).toBe(200)
+    expect(second.statusCode).toBe(200)
+    expect(mockFindUnique).toHaveBeenCalledTimes(1)
+    await app.close()
+  })
+
+  it('exports cache lookups as a hit/miss metric', async () => {
+    mockFindUnique.mockResolvedValue({ ...validRecord })
+    await lookupApiKey('metric-key') // miss → Postgres
+    await lookupApiKey('metric-key') // hit → cache
+    const output = await register.metrics()
+    expect(output).toContain('api_key_cache_lookups_total')
+    const values = (await api_key_cache_lookups_total.get()).values
+    const hit = values.find((v) => v.labels.result === 'hit')?.value ?? 0
+    const miss = values.find((v) => v.labels.result === 'miss')?.value ?? 0
+    expect(hit).toBeGreaterThanOrEqual(1)
+    expect(miss).toBeGreaterThanOrEqual(1)
   })
 })
 
@@ -742,17 +864,35 @@ describe('lastUsedAt recording & throttling', () => {
   })
 
   it('tracks throttle intervals independently per key', async () => {
+    // Keyed off the hash rather than a queue of mockResolvedValueOnce values:
+    // the lookup cache (#495) means a repeat request for the same key does not
+    // reach Postgres at all, so a sequential queue hands the *next* key's
+    // record to whichever lookup happens to miss the cache.
+    const records: Record<string, unknown> = {
+      [sha256('key-alpha')]: {
+        id: 'key-alpha',
+        label: 'alpha',
+        ratePerMin: 100,
+        ratePerDay: 5000,
+        revokedAt: null,
+        expiresAt: null,
+      },
+      [sha256('key-beta')]: {
+        id: 'key-beta',
+        label: 'beta',
+        ratePerMin: 100,
+        ratePerDay: 5000,
+        revokedAt: null,
+        expiresAt: null,
+      },
+    }
+    mockFindUnique.mockImplementation(async ({ where }: { where: { hash: string } }) =>
+      records[where.hash] ?? null
+    )
+
     const app = await buildAuthedApp()
 
-    // Request with key A
-    mockFindUnique.mockResolvedValueOnce({
-      id: 'key-alpha',
-      label: 'alpha',
-      ratePerMin: 100,
-      ratePerDay: 5000,
-      revokedAt: null,
-      expiresAt: null,
-    })
+    // Key A: first request writes.
     await app.inject({
       method: 'GET',
       url: '/price/test',
@@ -764,15 +904,7 @@ describe('lastUsedAt recording & throttling', () => {
       data: { lastUsedAt: expect.any(Date) },
     })
 
-    // Immediate second request with key A -> throttled
-    mockFindUnique.mockResolvedValueOnce({
-      id: 'key-alpha',
-      label: 'alpha',
-      ratePerMin: 100,
-      ratePerDay: 5000,
-      revokedAt: null,
-      expiresAt: null,
-    })
+    // Key A again, immediately: throttled.
     await app.inject({
       method: 'GET',
       url: '/price/test',
@@ -780,15 +912,7 @@ describe('lastUsedAt recording & throttling', () => {
     })
     expect(mockUpdate).toHaveBeenCalledTimes(1)
 
-    // Request with key B -> writes immediately (independent bucket)
-    mockFindUnique.mockResolvedValueOnce({
-      id: 'key-beta',
-      label: 'beta',
-      ratePerMin: 100,
-      ratePerDay: 5000,
-      revokedAt: null,
-      expiresAt: null,
-    })
+    // Key B: its own bucket, so it writes straight away.
     await app.inject({
       method: 'GET',
       url: '/price/test',

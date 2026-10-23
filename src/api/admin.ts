@@ -179,6 +179,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         data: { revokedAt: new Date() },
       })
 
+      // Drop the cached lookup so the revoke takes effect immediately on this
+      // instance (Issue #495). Other instances pick it up within the cache TTL.
+      invalidateApiKey(existing.hash)
+
       return reply.status(200).send({ id, revoked: true })
     },
   )
@@ -221,6 +225,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         data: { expiresAt: overlapEndsAt },
       })
 
+      // The old key's cached lookup still says `expiresAt: null` (#495). Expiry
+      // is re-checked on every cache hit, but against the *cached* value, so
+      // without this the overlap deadline only starts being enforced once the
+      // entry goes stale. Dropping it makes the new expiry effective at once.
+      invalidateApiKey(oldKey.hash)
+
       // Generate replacement key inheriting quotas and metadata
       const plaintext = generateApiKey()
       const newKey = await prisma.apiKey.create({
@@ -232,6 +242,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           monthlyQuotaCents: oldKey.monthlyQuotaCents,
           dailyQuotaCents: oldKey.dailyQuotaCents,
           overagePolicy: oldKey.overagePolicy,
+          // Rotation has to carry the scopes across. `scopes` defaults to `[]`,
+          // so a replacement key minted without them authenticates fine and
+          // then 403s on every scoped route — a rotation that hands the caller
+          // a key which cannot do what the old one did.
+          scopes: oldKey.scopes ?? [],
         },
       })
 
