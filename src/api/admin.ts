@@ -37,7 +37,7 @@ interface RotateKeyBody {
 export async function registerAdminRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { limit?: string } }>(
     '/admin/webhook-delivery-failures',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       if (!isAdminAuthorized(req)) {
         return reply.status(401).send({ error: 'Unauthorized', message: 'Provide a valid X-Admin-Token header.' })
@@ -56,7 +56,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.post<{ Body: CreateKeyBody }>(
     '/admin/keys',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Body: CreateKeyBody }>, reply: FastifyReply) => {
        if (!isAdminAuthorized(req)) {
          return reply.status(401).send({
@@ -119,7 +119,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/keys',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
@@ -141,6 +141,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           revokedAt: true,
           expiresAt: true,
           createdAt: true,
+          // #500: null means "never authenticated since this column existed",
+          // which is what makes an abandoned key visible to an operator.
+          lastUsedAt: true,
           monthlyQuotaCents: true,
           dailyQuotaCents: true,
           overagePolicy: true,
@@ -153,7 +156,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>(
     '/admin/keys/:id',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
        if (!isAdminAuthorized(req)) {
          return reply.status(401).send({
@@ -182,7 +185,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: RotateKeyBody }>(
     '/admin/keys/:id/rotate',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Params: { id: string }; Body: RotateKeyBody }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()

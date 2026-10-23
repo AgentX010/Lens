@@ -19,7 +19,7 @@ function isAdminAuthorized(req: FastifyRequest): boolean {
 export async function registerUsageRoutes(app: FastifyInstance) {
   app.get<{ Params: { keyId: string } }>(
     '/admin/usage/:keyId',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
        if (!isAdminAuthorized(req)) {
          return reply.status(401).send({
@@ -35,7 +35,7 @@ export async function registerUsageRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/usage',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
        if (!isAdminAuthorized(req)) {
          return reply.status(401).send({

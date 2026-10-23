@@ -27,6 +27,10 @@ import {
   extractBearer,
   lookupApiKey,
   hasScope,
+  recordApiKeyLastUsed,
+  getKeyLastUsedThrottleMs,
+  resetApiKeyLastUsedThrottle,
+  DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS,
 } from '../api/auth'
 import { registerAdminRoutes, generateApiKey } from '../api/admin'
 import { register, api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
@@ -64,6 +68,9 @@ async function buildAuthedApp() {
 }
 
 beforeEach(() => {
+  // The lastUsedAt throttle is module-level state keyed by id; without this a
+  // window claimed in one test silently throttles the next one's write.
+  resetApiKeyLastUsedThrottle()
   mockFindUnique.mockReset()
   mockFindMany.mockReset()
   mockCreate.mockReset()
@@ -574,5 +581,247 @@ describe('admin endpoints', () => {
     const output = await register.metrics()
     expect(output).toContain('api_key_auth_failures_total')
     expect(output).toContain('admin_auth_failures_total')
+  })
+})
+
+describe('lastUsedAt recording & throttling', () => {
+  it('records lastUsedAt on successful authentication', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1',
+      label: 'acme',
+      ratePerMin: 120,
+      ratePerDay: 50000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer test-valid-key' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+    expect(mockUpdate).toHaveBeenCalledWith({
+      where: { id: 'key-1' },
+      data: { lastUsedAt: expect.any(Date) },
+    })
+  })
+
+  it('does not write lastUsedAt on failed authentication or public routes', async () => {
+    mockFindUnique.mockResolvedValue(null)
+    const app = await buildAuthedApp()
+
+    // 1. Failed auth (invalid key)
+    const resFail = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer non-existent' },
+    })
+    expect(resFail.statusCode).toBe(401)
+    expect(mockUpdate).not.toHaveBeenCalled()
+
+    // 2. Public route without auth
+    const resPublic = await app.inject({
+      method: 'GET',
+      url: '/status',
+    })
+    expect(resPublic.statusCode).toBe(200)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it('throttles writes so repeated requests do not cause a database write each time', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-throttled',
+      label: 'acme',
+      ratePerMin: 1000,
+      ratePerDay: 50000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    const app = await buildAuthedApp()
+    const headers = { authorization: 'Bearer test-throttled-key' }
+
+    // Send 5 rapid requests with the same key
+    for (let i = 0; i < 5; i++) {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/price/test',
+        headers,
+      })
+      expect(res.statusCode).toBe(200)
+    }
+
+    // Must be called exactly once across the 5 requests
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+    expect(mockUpdate).toHaveBeenCalledWith({
+      where: { id: 'key-throttled' },
+      data: { lastUsedAt: expect.any(Date) },
+    })
+  })
+
+  it('updates lastUsedAt again once the throttle interval has elapsed', async () => {
+    vi.useFakeTimers()
+    try {
+      const startTime = new Date('2026-10-20T12:00:00.000Z')
+      vi.setSystemTime(startTime)
+
+      mockFindUnique.mockResolvedValue({
+        id: 'key-timer',
+        label: 'acme',
+        ratePerMin: 1000,
+        ratePerDay: 50000,
+        revokedAt: null,
+        expiresAt: null,
+      })
+
+      const app = await buildAuthedApp()
+      const headers = { authorization: 'Bearer test-timer-key' }
+
+      // 1st request at t = 0
+      const r1 = await app.inject({ method: 'GET', url: '/price/test', headers })
+      expect(r1.statusCode).toBe(200)
+      expect(mockUpdate).toHaveBeenCalledTimes(1)
+      expect(mockUpdate).toHaveBeenLastCalledWith({
+        where: { id: 'key-timer' },
+        data: { lastUsedAt: startTime },
+      })
+
+      // 2nd request at t = 10s (within default 60s throttle) -> throttled
+      vi.advanceTimersByTime(10_000)
+      const r2 = await app.inject({ method: 'GET', url: '/price/test', headers })
+      expect(r2.statusCode).toBe(200)
+      expect(mockUpdate).toHaveBeenCalledTimes(1)
+
+      // 3rd request at t = 65s (past the 60s throttle) -> writes again
+      vi.advanceTimersByTime(55_000)
+      const laterTime = new Date('2026-10-20T12:01:05.000Z')
+      const r3 = await app.inject({ method: 'GET', url: '/price/test', headers })
+      expect(r3.statusCode).toBe(200)
+      expect(mockUpdate).toHaveBeenCalledTimes(2)
+      expect(mockUpdate).toHaveBeenLastCalledWith({
+        where: { id: 'key-timer' },
+        data: { lastUsedAt: laterTime },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('documents and honors configurable throttle interval via environment variable', () => {
+    const originalThrottle = process.env.KEY_LAST_USED_THROTTLE_SECONDS
+    const originalApiThrottle = process.env.API_KEY_LAST_USED_THROTTLE_SECONDS
+    try {
+      delete process.env.KEY_LAST_USED_THROTTLE_SECONDS
+      delete process.env.API_KEY_LAST_USED_THROTTLE_SECONDS
+
+      // Default is 60s (60000ms)
+      expect(getKeyLastUsedThrottleMs()).toBe(DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS * 1000)
+      expect(DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS).toBe(60)
+
+      // Configured via KEY_LAST_USED_THROTTLE_SECONDS
+      process.env.KEY_LAST_USED_THROTTLE_SECONDS = '15'
+      expect(getKeyLastUsedThrottleMs()).toBe(15_000)
+
+      // Configured to 0 (no throttle)
+      process.env.KEY_LAST_USED_THROTTLE_SECONDS = '0'
+      expect(getKeyLastUsedThrottleMs()).toBe(0)
+
+      // Fallback to API_KEY_LAST_USED_THROTTLE_SECONDS
+      delete process.env.KEY_LAST_USED_THROTTLE_SECONDS
+      process.env.API_KEY_LAST_USED_THROTTLE_SECONDS = '30'
+      expect(getKeyLastUsedThrottleMs()).toBe(30_000)
+    } finally {
+      if (originalThrottle !== undefined) process.env.KEY_LAST_USED_THROTTLE_SECONDS = originalThrottle
+      else delete process.env.KEY_LAST_USED_THROTTLE_SECONDS
+
+      if (originalApiThrottle !== undefined) process.env.API_KEY_LAST_USED_THROTTLE_SECONDS = originalApiThrottle
+      else delete process.env.API_KEY_LAST_USED_THROTTLE_SECONDS
+    }
+  })
+
+  it('tracks throttle intervals independently per key', async () => {
+    const app = await buildAuthedApp()
+
+    // Request with key A
+    mockFindUnique.mockResolvedValueOnce({
+      id: 'key-alpha',
+      label: 'alpha',
+      ratePerMin: 100,
+      ratePerDay: 5000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer key-alpha' },
+    })
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+    expect(mockUpdate).toHaveBeenLastCalledWith({
+      where: { id: 'key-alpha' },
+      data: { lastUsedAt: expect.any(Date) },
+    })
+
+    // Immediate second request with key A -> throttled
+    mockFindUnique.mockResolvedValueOnce({
+      id: 'key-alpha',
+      label: 'alpha',
+      ratePerMin: 100,
+      ratePerDay: 5000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer key-alpha' },
+    })
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+
+    // Request with key B -> writes immediately (independent bucket)
+    mockFindUnique.mockResolvedValueOnce({
+      id: 'key-beta',
+      label: 'beta',
+      ratePerMin: 100,
+      ratePerDay: 5000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer key-beta' },
+    })
+    expect(mockUpdate).toHaveBeenCalledTimes(2)
+    expect(mockUpdate).toHaveBeenLastCalledWith({
+      where: { id: 'key-beta' },
+      data: { lastUsedAt: expect.any(Date) },
+    })
+  })
+
+  it('does not fail authenticated requests if database update throws', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-failing-db',
+      label: 'failing',
+      ratePerMin: 100,
+      ratePerDay: 5000,
+      revokedAt: null,
+      expiresAt: null,
+    })
+    mockUpdate.mockRejectedValueOnce(new Error('PostgreSQL connection terminated'))
+
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer test-valid-key' },
+    })
+
+    // Request must still succeed with 200
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true })
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
   })
 })
