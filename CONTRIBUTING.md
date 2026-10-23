@@ -49,7 +49,7 @@ git clone https://github.com/Miracle656/Lens.git
 cd Lens
 npm install
 cp .env.example .env   # fill in DATABASE_URL, REDIS_URL, WATCHED_PAIRS
-npx prisma db push
+npm run db:migrate     # apply committed migrations (prisma migrate dev) — do NOT `db push`
 npm run dev
 ```
 

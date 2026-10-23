@@ -333,6 +333,7 @@ model ApiKey {
   revokedAt        DateTime? @map("revoked_at")
   expiresAt        DateTime? @map("expires_at")
   createdAt        DateTime  @default(now()) @map("created_at")
+  lastUsedAt       DateTime? @map("last_used_at")
   monthlyQuotaCents Int?     @default(10000) @map("monthly_quota_cents")
   dailyQuotaCents  Int?      @default(500) @map("daily_quota_cents")
   overagePolicy    String    @default("block") @map("overage_policy")

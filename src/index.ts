@@ -1,5 +1,4 @@
 import 'dotenv/config'
-import { execSync } from 'child_process'
 import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
@@ -12,6 +11,7 @@ import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
 import { assertSchemaValid } from './db/schemaVerify'
+import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
@@ -41,8 +41,17 @@ installProcessErrorHandlers(log)
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
-  log.info('running database migrations')
-  execSync('node node_modules/prisma/build/index.js db push --accept-data-loss', { stdio: 'inherit' })
+  // #233: apply committed, reviewable migrations — never `db push`. `migrate
+  // deploy` only runs migrations already in prisma/migrations and fails loudly
+  // if the DB is ahead of them, instead of silently diffing the live schema and
+  // applying whatever it decides. See docs/database-migrations.md.
+  //
+  // Every database Lens has today was made by `db push`, so it carries the
+  // schema with no migration history and `migrate deploy` alone would collide
+  // with its own baseline — a crash loop, since this function exits(1). The
+  // one-time adoption is in applyMigrations(); see src/db/migrate.ts.
+  log.info('applying committed database migrations')
+  await applyMigrations({ db: pgPool, warn: (context, message) => log.warn(context, message) })
   log.info('database ready')
 
   // ── Connect dependencies ──────────────────────────────────────────────────

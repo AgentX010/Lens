@@ -72,42 +72,65 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
+## Venues
+
+<!-- VENUES:START -->
+| Venue | Source | Type | Description |
+|---|---|---|---|
+| SDEX | `SDEX` | Order Book | Stellar's Classic Order Book (SDEX) |
+| AMM | `AMM` | Liquidity Pool | Stellar native AMM liquidity pools (Horizon) |
+| Soroswap | `soroswap_amm` | AMM DEX | Soroswap constant-product automated market maker on Soroban |
+| Aquarius | `aquarius_amm` | Liquidity Pool | Aquarius AMM liquidity pools |
+| DeFindex | `defindex_vault` | Vault | DeFindex yield vaults on Soroban, priced per share |
+| Phoenix | `phoenix_amm` | Liquidity Pool | Phoenix AMM pools on Soroban |
+<!-- VENUES:END -->
+
 ## Endpoints
 
 ### REST
+<!-- ENDPOINTS:START -->
 | Method | Path | Description |
 |---|---|---|
+| GET | `/venues/registry` | List registered venues and their network liveness |
+| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
+| GET | `/tvl` | Total Value Locked across Stellar DeFi venues |
+| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
+| GET | `/status` | Indexer health |
+| GET | `/snapshot?network=testnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
-| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
-| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
-| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
+| GET | `/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
-| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
-| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
+| GET | `/pools` | Active AMM pools being watched |
 | GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
-| GET | `/pools` | Active AMM pools being watched |
 | GET | `/pairs` | Watched trading pairs |
+| POST | `/pairs` | Add a new trading pair (Admin only) |
+| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
+| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
+| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
+| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
 | GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
+| GET | `/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
+| GET | `/movers` | Get biggest gainers, biggest losers, and volume movers |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
-| GET | `/status` | Indexer health |
-| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
-| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
-| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
+| GET | `/correlation` | Compute price correlation matrix across a basket of assets over a window |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
+| GET | `/discovery/search` | Natural language search with ranking and quality evaluation for discoverable resources |
+| POST | `/webhooks` | Subscribe to a price-threshold webhook |
+| DELETE | `/webhooks/:id` | Delete a webhook subscription |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
+| GET | `/usage` | Get usage and quota for the calling API key (alias for /usage/me) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
 | POST | `/verify` | Verify an x402 payment payload |
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
-| POST | `/webhooks` | Subscribe to a price-threshold webhook |
-| DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
+<!-- ENDPOINTS:END -->
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
@@ -115,6 +138,8 @@ missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
 `/admin/usage*`, `/admin/webhook-delivery-failures`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
+
+All routes are partitioned into three security and CORS tiers (`public`, `credentialed`, and `admin`) with a split CORS policy — see the [Route Classification & CORS Guide](docs/routes.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
@@ -505,24 +530,62 @@ any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md
 
 Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
 
-### 1. Free health check (no payment)
+### 1. Free health check & status monitoring (`/status`)
+
+`/status` provides a structured, comprehensive health contract separating **process health** (runtime container, memory, uptime) from **data health** (ingestion currency, last ledger, ingest lag).
 
 ```bash
 curl http://localhost:3002/status
-# {
-#   "ok": true,
-#   "network": "testnet",
-#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
-#   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
-#   "ingestLagSeconds": 4
-# }
 ```
 
-`/status` answers for one network — pass `?network=mainnet` (or the
-`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
-`null` until that network has ingested, and `lastIndexedLedger` is `null` until
-its SDEX ingester has recorded a trade.
+```json
+{
+  "ok": true,
+  "status": "healthy",
+  "network": "testnet",
+  "health": {
+    "process": "healthy",
+    "data": "healthy"
+  },
+  "process": {
+    "uptimeSeconds": 86420,
+    "memoryUsageMb": 18.42,
+    "status": "healthy"
+  },
+  "data": {
+    "lastIndexedLedger": 53842917,
+    "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+    "ingestLagSeconds": 4,
+    "isStale": false
+  },
+  "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+  "lastIndexedLedger": 53842917,
+  "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+  "ingestLagSeconds": 4
+}
+```
+
+#### Health Differentiation & Paging Conditions
+- **Process Health vs Data Health:** The HTTP status code distinguishes service availability from data staleness.
+  - `HTTP 200 OK` (`status: "healthy"`): Both process runtime and data feeds are functioning normally.
+  - `HTTP 200 OK` (`status: "degraded"`, `health.data: "stale"`): The API server is healthy and responding, but ingestion lag exceeds 300 seconds. **Do not page engineers for intermittent upstream ledger delays.**
+  - `HTTP 200 OK` (`status: "degraded"`, `health.process: "degraded"`): the port answers but boot has not finished, so not every ingester is running yet. Normal for the first seconds of a deploy — gate rollouts on `/ready`, which stays 503 until boot completes, rather than paging on this.
+  - `HTTP 503 Service Unavailable` (`pagingCondition: "DATABASE_DOWN"`): Critical infrastructure failure (e.g. Postgres is down or unreachable). **Uptime monitors should page on HTTP 503.** The body carries `error: "Database unavailable"` and nothing more — `/status` is public, so the driver's own message (which can contain the host, the user and the connection string) goes to the server log only.
+
+#### Monitoring Configuration Example (Datadog / Prometheus / BetterStack)
+Configure your synthetic monitor / HTTP probe:
+```yaml
+# Prometheus Blackbox / Uptime monitor probe example
+probe:
+  target: "http://lens-api.internal:3002/status?network=mainnet"
+  method: "GET"
+  expect_status: 200
+  alert_conditions:
+    - severity: critical # Page on-call
+      condition: "status_code == 503 || body.pagingCondition == 'DATABASE_DOWN'"
+    - severity: warning  # Slack notification only
+      condition: "body.health.data == 'stale' || body.data.ingestLagSeconds > 300"
+```
 
 ### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
 
@@ -697,8 +760,8 @@ npm install
 # 3. Copy env
 cp .env.example .env
 
-# 4. Push database schema
-npm run db:push
+# 4. Apply database migrations
+npm run db:deploy
 
 # 5. Seed the database with fixture data
 npm run seed

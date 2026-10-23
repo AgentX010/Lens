@@ -417,6 +417,8 @@ async function ingestPairThrottled(
 
 export const defindexAdapter: VenueAdapter<string, DeFindexVaultSnapshot> = {
   name: 'DeFindex',
+  type: 'Vault',
+  description: 'DeFindex yield vaults on Soroban, priced per share',
   source: DEFINDEX_SOURCE,
 
   isEnabled(network: NetworkName): boolean {
