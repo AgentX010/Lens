@@ -1,11 +1,15 @@
+import { redis } from '../redis'
+import { createLogger } from '../logger'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
 import { config } from '../config'
-import { api_key_auth_failures_total, api_key_cache_lookups_total } from '../metrics'
+import { api_key_auth_failures_total, admin_auth_failures_total, api_key_cache_lookups_total } from '../metrics'
 
-type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired'
+const log = createLogger('auth')
+
+type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired' | 'insufficient_scope'
 
 /**
  * Metadata for an authenticated API key, attached to each request as
@@ -16,6 +20,7 @@ export interface ApiKeyContext {
   label: string
   ratePerMin: number
   ratePerDay: number
+  scopes: string[]
 }
 
 declare module 'fastify' {
@@ -23,14 +28,35 @@ declare module 'fastify' {
     apiKey?: ApiKeyContext
   }
   interface FastifyContextConfig {
-    /** When true, the API-key auth hook skips this route (e.g. health, admin). */
+    /** When true, this route is genuinely public and requires no authentication (e.g. health probes). */
     public?: boolean
+    /** When true, this route is an operator-only admin route guarded by ADMIN_TOKEN. */
+    admin?: boolean
+    /** Semantic authentication classification. */
+    auth?: 'none' | 'api-key' | 'admin'
+    /** Required scope to access this route (e.g. 'read:prices', 'read:history', 'subscribe'). */
+    scope?: string
+    /** Required scopes to access this route. */
+    scopes?: string[]
   }
 }
 
 /** SHA-256 hex digest of a plaintext API key. We only ever store/compare hashes. */
 export function hashApiKey(key: string): string {
   return createHash('sha256').update(key, 'utf8').digest('hex')
+}
+
+/**
+ * Checks whether an API key context satisfies the required scope.
+ *
+ * A key with no scopes recorded (empty or undefined) means "everything"
+ * so that existing integrations continue to work without disruption.
+ */
+export function hasScope(key: ApiKeyContext, requiredScope?: string): boolean {
+  if (!requiredScope) return true
+  // A key with no scopes recorded means "everything"
+  if (!key.scopes || key.scopes.length === 0) return true
+  return key.scopes.includes(requiredScope) || key.scopes.includes('*')
 }
 
 /** Extracts the bearer token from an Authorization header, or null. */
@@ -122,6 +148,89 @@ export async function lookupApiKey(plaintext: string): Promise<ApiKeyContext | n
   return (await lookupApiKeyResult(plaintext)).context
 }
 
+/**
+ * How long to wait between `lastUsedAt` writes for the same key.
+ *
+ * Authentication is otherwise a read, and a key doing 200 req/s would turn it
+ * into 200 writes/s against a row nobody reads in real time. A minute is far
+ * finer than any question `lastUsedAt` answers — "is this key still in use",
+ * "when did this integration stop calling" — and coarse enough that the write
+ * disappears into the noise.
+ */
+export const DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS = 60
+
+/** Per-key wall-clock time of the last write, in this process. */
+const keyLastUsedTimestamps = new Map<string, number>()
+
+/**
+ * The configured throttle in milliseconds. `KEY_LAST_USED_THROTTLE_SECONDS` is
+ * the documented name; `API_KEY_LAST_USED_THROTTLE_SECONDS` is accepted as an
+ * alias. `0` disables the throttle and writes on every authenticated request.
+ */
+export function getKeyLastUsedThrottleMs(): number {
+  const envVal =
+    process.env.KEY_LAST_USED_THROTTLE_SECONDS ??
+    process.env.API_KEY_LAST_USED_THROTTLE_SECONDS
+  if (envVal !== undefined) {
+    const parsed = parseInt(envVal, 10)
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed * 1000
+    }
+  }
+  return DEFAULT_KEY_LAST_USED_THROTTLE_SECONDS * 1000
+}
+
+/** Test seam: forget every key's last write time. */
+export function resetApiKeyLastUsedThrottle(): void {
+  keyLastUsedTimestamps.clear()
+}
+
+/** Keys whose write has already been reported, so one bad column is one log line. */
+const lastUsedWriteFailuresLogged = new Set<string>()
+
+/**
+ * Stamp `lastUsedAt` on an authenticated key, at most once per throttle window.
+ *
+ * Resolves true when a write happened, false when it was throttled or failed.
+ * A failure is deliberately not fatal — a valid, authenticated request must not
+ * be refused because an audit timestamp could not be stored — but it is logged
+ * once per key rather than swallowed. Lens no longer converges its schema at
+ * boot (`migrate deploy` replaced `db push`, see docs/database-migrations.md),
+ * so a missing `last_used_at` column would otherwise leave this feature
+ * silently dead in an environment nobody migrated, with every write rejected
+ * and nothing anywhere saying so.
+ */
+export async function recordApiKeyLastUsed(
+  keyId: string,
+  timestamp: Date = new Date(),
+): Promise<boolean> {
+  const now = timestamp.getTime()
+  const lastRecorded = keyLastUsedTimestamps.get(keyId) ?? 0
+  const throttleMs = getKeyLastUsedThrottleMs()
+
+  if (now - lastRecorded < throttleMs) {
+    return false
+  }
+
+  // Claim the window before awaiting, so concurrent requests for the same key
+  // do not each decide they are the one that should write.
+  keyLastUsedTimestamps.set(keyId, now)
+
+  try {
+    await prisma.apiKey.update({
+      where: { id: keyId },
+      data: { lastUsedAt: timestamp },
+    })
+    return true
+  } catch (err: unknown) {
+    if (!lastUsedWriteFailuresLogged.has(keyId)) {
+      lastUsedWriteFailuresLogged.add(keyId)
+      log.warn({ err, keyId }, 'could not record lastUsedAt for an API key; authentication is unaffected')
+    }
+    return false
+  }
+}
+
 async function lookupApiKeyResult(
   plaintext: string,
 ): Promise<{ context: ApiKeyContext | null; failureReason?: ApiKeyAuthFailureReason }> {
@@ -146,11 +255,55 @@ async function lookupApiKeyResult(
           label: record.label,
           ratePerMin: record.ratePerMin,
           ratePerDay: record.ratePerDay,
+          // Scopes are part of the cached context, not re-read on a hit. Omit
+          // them and every cache hit authenticates with `scopes: undefined`,
+          // so `hasScope` refuses and each scoped route 403s for the TTL —
+          // the kind of break that looks like an authorization bug rather than
+          // a caching one.
+          scopes: record.scopes ?? [],
         },
       }
     : { found: false }
   cacheSet(hash, value, now)
   return evaluate(value, now)
+}
+
+export type AdminAuthResult = 'authorized' | 'unauthorized' | 'not_configured'
+
+/**
+ * Checks whether ADMIN_TOKEN is set to a non-empty, non-placeholder value.
+ * An unset token, whitespace-only string, or obvious placeholder disables the admin surface.
+ */
+export function isAdminConfigured(): boolean {
+  const adminToken = process.env.ADMIN_TOKEN?.trim()
+  if (!adminToken || adminToken.length === 0) return false
+  const weakPlaceholders = new Set(['your-admin-token-here', 'change-me', 'placeholder'])
+  return !weakPlaceholders.has(adminToken.toLowerCase())
+}
+
+/**
+ * Evaluates admin authorization for an incoming request:
+ * - 'not_configured': ADMIN_TOKEN is not set or empty (admin surface disabled)
+ * - 'unauthorized': valid token configured, but request has missing/wrong token
+ * - 'authorized': request provided matching token in constant-time
+ */
+export function checkAdminAuth(req: FastifyRequest): AdminAuthResult {
+  if (!isAdminConfigured()) {
+    return 'not_configured'
+  }
+  const adminToken = process.env.ADMIN_TOKEN!.trim()
+  const supplied =
+    (req.headers['x-admin-token'] as string | undefined) ??
+    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
+  if (!supplied) return 'unauthorized'
+  const a = Buffer.from(supplied)
+  const b = Buffer.from(adminToken)
+  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
+  // The length guard is not itself a meaningful leak for a high-entropy token.
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return 'unauthorized'
+  }
+  return 'authorized'
 }
 
 /**
@@ -162,17 +315,73 @@ async function lookupApiKeyResult(
  * usage), so the two surfaces cannot drift apart.
  */
 export function isAdminAuthorized(req: FastifyRequest): boolean {
-  const adminToken = process.env.ADMIN_TOKEN
-  if (!adminToken) return false
-  const supplied =
-    (req.headers['x-admin-token'] as string | undefined) ??
-    req.headers['authorization']?.replace(/^Bearer\s+/i, '')
-  if (!supplied) return false
-  const a = Buffer.from(supplied)
-  const b = Buffer.from(adminToken)
-  // Constant-time comparison (timingSafeEqual requires equal-length buffers).
-  // The length guard is not itself a meaningful leak for a high-entropy token.
-  return a.length === b.length && timingSafeEqual(a, b)
+  return checkAdminAuth(req) === 'authorized'
+}
+
+
+/**
+ * Seconds remaining until UTC midnight.
+ * Used for both Redis TTL and the HTTP Retry-After response header.
+ */
+export function getSecondsUntilUtcMidnight(now = new Date()): number {
+  const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  return Math.max(1, Math.floor((tomorrow.getTime() - now.getTime()) / 1000))
+}
+
+// In-memory fallback daily request tracker (keyed by apiKeyId), used if Redis is unreachable or in tests
+const inMemoryDailyUsage = new Map<string, { count: number; date: string }>()
+
+/**
+ * Checks and increments the daily request count for an authenticated API key.
+ *
+ * Uses Redis (ratelimit:day:{apiKeyId}:{YYYY-MM-DD}) with an expiration set to
+ * the remaining seconds until UTC midnight.
+ *
+ * On Redis being unreachable, allow the request and log it — do not fail closed.
+ * Unlike x402 metering which guards an actual payment and must fail closed,
+ * a rate limiter failing closed would turn a cache/Redis outage into a total API
+ * outage for every authenticated caller, which is a far worse trade.
+ */
+export async function checkAndIncrementDailyUsage(
+  apiKeyId: string,
+  ratePerDay: number,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const redisKey = `ratelimit:day:${apiKeyId}:${today}`
+
+  try {
+    if (redis && redis.status === 'ready') {
+      const count = await redis.incr(redisKey)
+      if (count === 1) {
+        const ttl = getSecondsUntilUtcMidnight(now)
+        await redis.expire(redisKey, ttl)
+      }
+      if (count > ratePerDay) {
+        return { allowed: false, remaining: 0 }
+      }
+      return { allowed: true, remaining: Math.max(0, ratePerDay - count) }
+    }
+  } catch (err) {
+    // Fail-open: allow request and log warning
+    log.warn({ err, apiKeyId }, 'redis rate limiter unreachable; failing open')
+  }
+
+  // In-memory fallback when Redis is offline or during testing
+  const entry = inMemoryDailyUsage.get(apiKeyId)
+  if (!entry || entry.date !== today) {
+    inMemoryDailyUsage.set(apiKeyId, { count: 1, date: today })
+    return { allowed: true, remaining: Math.max(0, ratePerDay - 1) }
+  }
+  if (entry.count >= ratePerDay) {
+    return { allowed: false, remaining: 0 }
+  }
+  entry.count++
+  return { allowed: true, remaining: Math.max(0, ratePerDay - entry.count) }
+}
+
+export function resetDailyUsage(): void {
+  inMemoryDailyUsage.clear()
 }
 
 /**
@@ -189,13 +398,50 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
  * Routes can opt out of auth (e.g. health/metrics) by setting
  * `config.public = true` on the route definition.
  */
+/** Route config fields the two auth hooks read. */
+type AuthRouteConfig = {
+  public?: boolean
+  admin?: boolean
+  auth?: 'none' | 'api-key' | 'admin'
+}
+
+/**
+ * Whether a request is bound for an operator-only admin route.
+ *
+ * Decided from the *matched route*, never from `req.url`. The raw URL is the
+ * client's spelling of the path: find-my-way percent-decodes before matching, so
+ * `GET /%61dmin/keys` reaches the `/admin/keys` handler while
+ * `req.url.startsWith('/admin')` is false — a structural guard keyed on the raw
+ * string would wave that request straight through. `routeOptions.url` is the
+ * pattern the route was registered with (`/admin/keys/:id`), so it cannot be
+ * spelled around. It is undefined when nothing matched, which needs no guard:
+ * the request is a 404 either way.
+ *
+ * The prefix is `/admin/` with the separator, plus `/admin` exactly, so a future
+ * `/administrators` route is not silently swept into the admin tier.
+ */
+export function isAdminRoute(req: FastifyRequest): boolean {
+  const config = (req.routeOptions?.config ?? {}) as AuthRouteConfig
+  if (config.admin === true || config.auth === 'admin') return true
+
+  const pattern = req.routeOptions?.url
+  if (!pattern) return false
+  return pattern === '/admin' || pattern.startsWith('/admin/')
+}
+
 async function apiKeyAuthPlugin(app: FastifyInstance) {
   app.decorateRequest('apiKey', undefined)
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Allow routes to mark themselves public (no auth required).
-    const routeConfig = (req.routeOptions?.config ?? {}) as { public?: boolean }
-    if (routeConfig.public) return
+    const routeConfig = (req.routeOptions?.config ?? {}) as AuthRouteConfig & {
+      scope?: string
+      scopes?: string[]
+    }
+    // Admin routes carry an operator token, not an API key, and are enforced by
+    // the admin hook below — so this hook steps aside rather than demanding a
+    // key it was never going to be given.
+    const isPublic = routeConfig.public === true || routeConfig.auth === 'none'
+    if (isPublic || isAdminRoute(req)) return
 
     const authorization = req.headers['authorization']
     const token = extractBearer(authorization)
@@ -243,7 +489,88 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     }
 
     req.apiKey = keyContext
+    // #500: after the key is known to be valid and before any scope or quota
+    // rejection — "last used" means "last authenticated", not "last allowed
+    // through", or a key whose quota is exhausted looks abandoned.
+    await recordApiKeyLastUsed(keyContext.id)
+
+    const requiredScopes = routeConfig.scopes ?? (routeConfig.scope ? [routeConfig.scope] : [])
+    for (const scope of requiredScopes) {
+      if (!hasScope(keyContext, scope)) {
+        api_key_auth_failures_total.inc({ reason: 'insufficient_scope' })
+        return reply.status(403).send({
+          error: 'Forbidden',
+          code: 'insufficient_scope',
+          message: `Missing required scope: ${scope}`,
+          requiredScope: scope,
+          scope,
+        })
+      }
+    }
+
+    // The per-minute limiter cannot express a daily cap, so this runs alongside it
+    if (keyContext.ratePerDay && keyContext.ratePerDay > 0) {
+      const { allowed, remaining } = await checkAndIncrementDailyUsage(keyContext.id, keyContext.ratePerDay)
+      const retryAfterSec = getSecondsUntilUtcMidnight()
+      reply.header('X-RateLimit-Limit-Day', keyContext.ratePerDay)
+      reply.header('X-RateLimit-Remaining-Day', remaining)
+      if (!allowed) {
+        reply.header('Retry-After', retryAfterSec)
+        return reply.status(429).send({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: `Daily rate limit of ${keyContext.ratePerDay} requests exceeded for this API key. Quota resets at UTC midnight.`,
+          retryAfter: retryAfterSec,
+        })
+      }
+    }
   })
 }
 
 export const registerApiKeyAuth = fp(apiKeyAuthPlugin, { name: 'api-key-auth' })
+
+/**
+ * Fastify plugin that structurally guards every operator-only admin endpoint.
+ *
+ * Runs as an onRequest hook over everything {@link isAdminRoute} recognises: a
+ * route declaring `admin: true` or `auth: 'admin'`, and anything registered
+ * under `/admin/`. So a new admin endpoint is protected by the fact of where it
+ * lives, not by whoever writes it remembering to call `isAdminAuthorized`.
+ *
+ * Register it before the admin routes themselves. Fastify resolves a route's
+ * hook chain when the route is registered, so a hook added afterwards does not
+ * apply to it — `src/__tests__/adminStructuralAuth.test.ts` holds that ordering
+ * by asserting on routes registered through `buildApp`'s own sequence.
+ */
+async function adminAuthHookPlugin(app: FastifyInstance) {
+  app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminRoute(req)) return
+
+    // Three outcomes, not two (#508). The hook runs before the handler, so it
+    // has to make the same distinction the handlers make, or a deployment with
+    // no ADMIN_TOKEN answers 401 "provide a valid token" to an operator who
+    // supplied a perfectly good one — and the 503 the handlers would have
+    // returned is unreachable.
+    const auth = checkAdminAuth(req)
+    if (auth === 'not_configured') {
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        code: 'admin_not_configured',
+        message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+      })
+    }
+    if (auth !== 'authorized') {
+      // Only a real rejection is a failure. An unconfigured surface is a
+      // deployment fact, and counting it here would turn one misconfigured
+      // environment into a permanent stream of auth-failure alerts.
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide a valid X-Admin-Token header.',
+      })
+    }
+  })
+}
+
+export const registerAdminAuth = fp(adminAuthHookPlugin, { name: 'admin-auth-hook' })

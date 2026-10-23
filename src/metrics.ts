@@ -50,9 +50,30 @@ export const price_snapshots_total = new Counter({
   registers: [register]
 })
 
+export const price_points_pruned_total = new Counter({
+  name: 'price_points_pruned_total',
+  help: 'Total number of old price points pruned from the database',
+  labelNames: ['network'],
+  registers: [register]
+})
+
+export const price_points_rolled_up_total = new Counter({
+  name: 'price_points_rolled_up_total',
+  help: 'Total number of old price points rolled up into aggregates before pruning',
+  labelNames: ['network'],
+  registers: [register]
+})
+
 export const price_requests_total = new Counter({
   name: 'price_requests_total',
   help: 'Total number of price API requests served',
+  registers: [register]
+})
+
+export const price_rejected_total = new Counter({
+  name: 'price_rejected_total',
+  help: 'Total number of prices rejected due to plausibility sanity bounds',
+  labelNames: ['pair', 'network', 'venue', 'reason'],
   registers: [register]
 })
 
@@ -95,6 +116,20 @@ export const global_shed_requests_total = new Counter({
 export const x402_payments_received_total = new Counter({
   name: 'x402_payments_received_total',
   help: 'Total number of valid x402 payments received',
+  registers: [register]
+})
+
+export const webhook_delivery_failures_total = new Counter({
+  name: 'webhook_delivery_failures_total',
+  help: 'Permanent webhook delivery failures by bounded failure category',
+  labelNames: ['category'],
+  registers: [register]
+})
+
+export const process_crashes_total = new Counter({
+  name: 'process_crashes_total',
+  help: 'Total number of fatal process errors, by event',
+  labelNames: ['event'],
   registers: [register]
 })
 
@@ -176,6 +211,44 @@ export const db_query_duration_seconds = new Histogram({
   registers: [register]
 })
 
+// Database connection pool utilisation metrics
+export const db_pool_connections_in_use = new Gauge({
+  name: 'db_pool_connections_in_use',
+  help: 'Number of database connections currently checked out / in use',
+  registers: [register],
+})
+
+export const db_pool_connections_idle = new Gauge({
+  name: 'db_pool_connections_idle',
+  help: 'Number of idle database connections available in the pool',
+  registers: [register],
+})
+
+export const db_pool_connections_waiting = new Gauge({
+  name: 'db_pool_connections_waiting',
+  help: 'Number of queued requests currently waiting for a database connection',
+  registers: [register],
+})
+
+export const db_pool_exhaustion_errors_total = new Counter({
+  name: 'db_pool_exhaustion_errors_total',
+  help: 'Total number of database pool acquisition timeouts or exhaustion errors',
+  registers: [register],
+})
+
+let _poolMetricsUpdater: (() => void) | null = null
+
+export function setPoolMetricsUpdater(updater: () => void) {
+  _poolMetricsUpdater = updater
+}
+
 export async function getMetrics() {
+  if (_poolMetricsUpdater) {
+    try {
+      _poolMetricsUpdater()
+    } catch {
+      // Best-effort metric collection
+    }
+  }
   return await register.metrics()
 }
