@@ -38,7 +38,7 @@ interface RotateKeyBody {
 export async function registerAdminRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { limit?: string } }>(
     '/admin/webhook-delivery-failures',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       if (!isAdminAuthorized(req)) {
         return reply.status(401).send({ error: 'Unauthorized', message: 'Provide a valid X-Admin-Token header.' })
@@ -122,7 +122,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/keys',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
@@ -187,7 +187,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: RotateKeyBody }>(
     '/admin/keys/:id/rotate',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req: FastifyRequest<{ Params: { id: string }; Body: RotateKeyBody }>, reply: FastifyReply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()

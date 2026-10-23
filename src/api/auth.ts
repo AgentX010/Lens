@@ -195,21 +195,50 @@ export function resetDailyUsage(): void {
  * Routes can opt out of auth (e.g. health/metrics) by setting
  * `config.public = true` on the route definition.
  */
+/** Route config fields the two auth hooks read. */
+type AuthRouteConfig = {
+  public?: boolean
+  admin?: boolean
+  auth?: 'none' | 'api-key' | 'admin'
+}
+
+/**
+ * Whether a request is bound for an operator-only admin route.
+ *
+ * Decided from the *matched route*, never from `req.url`. The raw URL is the
+ * client's spelling of the path: find-my-way percent-decodes before matching, so
+ * `GET /%61dmin/keys` reaches the `/admin/keys` handler while
+ * `req.url.startsWith('/admin')` is false — a structural guard keyed on the raw
+ * string would wave that request straight through. `routeOptions.url` is the
+ * pattern the route was registered with (`/admin/keys/:id`), so it cannot be
+ * spelled around. It is undefined when nothing matched, which needs no guard:
+ * the request is a 404 either way.
+ *
+ * The prefix is `/admin/` with the separator, plus `/admin` exactly, so a future
+ * `/administrators` route is not silently swept into the admin tier.
+ */
+export function isAdminRoute(req: FastifyRequest): boolean {
+  const config = (req.routeOptions?.config ?? {}) as AuthRouteConfig
+  if (config.admin === true || config.auth === 'admin') return true
+
+  const pattern = req.routeOptions?.url
+  if (!pattern) return false
+  return pattern === '/admin' || pattern.startsWith('/admin/')
+}
+
 async function apiKeyAuthPlugin(app: FastifyInstance) {
   app.decorateRequest('apiKey', undefined)
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    const routeConfig = (req.routeOptions?.config ?? {}) as {
-      public?: boolean
-      admin?: boolean
-      auth?: 'none' | 'api-key' | 'admin'
+    const routeConfig = (req.routeOptions?.config ?? {}) as AuthRouteConfig & {
       scope?: string
       scopes?: string[]
     }
-    const url = req.url.split('?')[0]
-    const isAdmin = routeConfig.admin || routeConfig.auth === 'admin' || url.startsWith('/admin')
-    const isPublic = routeConfig.public || routeConfig.auth === 'none'
-    if (isPublic || isAdmin) return
+    // Admin routes carry an operator token, not an API key, and are enforced by
+    // the admin hook below — so this hook steps aside rather than demanding a
+    // key it was never going to be given.
+    const isPublic = routeConfig.public === true || routeConfig.auth === 'none'
+    if (isPublic || isAdminRoute(req)) return
 
     const authorization = req.headers['authorization']
     const token = extractBearer(authorization)
@@ -296,22 +325,19 @@ export const registerApiKeyAuth = fp(apiKeyAuthPlugin, { name: 'api-key-auth' })
 /**
  * Fastify plugin that structurally guards every operator-only admin endpoint.
  *
- * Runs as an onRequest hook and intercepts:
- * 1. Any route starting with `/admin` (e.g. `/admin/keys`, `/admin/usage`)
- * 2. Any route declaring `config: { admin: true }` or `config: { auth: 'admin' }`
+ * Runs as an onRequest hook over everything {@link isAdminRoute} recognises: a
+ * route declaring `admin: true` or `auth: 'admin'`, and anything registered
+ * under `/admin/`. So a new admin endpoint is protected by the fact of where it
+ * lives, not by whoever writes it remembering to call `isAdminAuthorized`.
  *
- * Guarantees that any new route added under `/admin` is automatically protected
- * by default, without relying on individual handler implementations.
+ * Register it before the admin routes themselves. Fastify resolves a route's
+ * hook chain when the route is registered, so a hook added afterwards does not
+ * apply to it — `src/__tests__/adminStructuralAuth.test.ts` holds that ordering
+ * by asserting on routes registered through `buildApp`'s own sequence.
  */
 async function adminAuthHookPlugin(app: FastifyInstance) {
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    const routeConfig = (req.routeOptions?.config ?? {}) as {
-      admin?: boolean
-      auth?: 'none' | 'api-key' | 'admin'
-    }
-    const url = req.url.split('?')[0]
-    const isAdmin = routeConfig.admin || routeConfig.auth === 'admin' || url.startsWith('/admin')
-    if (!isAdmin) return
+    if (!isAdminRoute(req)) return
 
     if (!isAdminAuthorized(req)) {
       admin_auth_failures_total.inc()
