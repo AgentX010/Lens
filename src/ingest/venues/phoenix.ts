@@ -529,7 +529,10 @@ export async function ingestPhoenixPair(
 
 export const phoenixAdapter: VenueAdapter<PhoenixPool, PhoenixReserves> = {
   name: 'Phoenix',
+  type: 'Liquidity Pool',
+  description: 'Phoenix AMM pools on Soroban',
   source: 'phoenix_amm',
+  classification: 'primary',
 
   isEnabled(network: NetworkName): boolean {
     return getNetworkConfig(network).phoenix.enabled

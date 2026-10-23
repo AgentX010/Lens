@@ -59,6 +59,10 @@ export interface BuildAppOptions {
    * routes — a duplicated list would drift and defeat the point.
    */
   onRoute?: (routeOptions: RouteOptions) => void
+  /**
+   * Optional CORS configuration override (useful in testing).
+   */
+  corsConfig?: CorsConfig
 }
 
 /**
@@ -101,7 +105,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.addHook('onRoute', options.onRoute)
   }
 
-  await app.register(cors, { origin: true })
+  // #268: one policy no longer covers public reads, credentialed calls and the
+  // admin surface. See src/cors.ts.
+  await app.register(cors, { delegator: createCorsDelegator(options.corsConfig) })
   await app.register(registerETag)
   await app.register(compress)
 

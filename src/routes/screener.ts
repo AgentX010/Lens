@@ -1,8 +1,15 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { pgPool } from '../db'
 import { activeNetwork } from '../config'
 import { formatValidationError, VALIDATION_ERROR_CODE } from '../validation'
+import {
+  ALLOWED_SORT_FIELDS,
+  MARKET_CAP_CODE,
+  MARKET_CAP_UNSUPPORTED,
+  runScreener,
+  ScreenerCursorError,
+  SCREENER_DEFAULT_LIMIT,
+} from '../services/screener'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { apiError } from '../errors'
 import {
@@ -14,45 +21,23 @@ import {
   SCREENER_MAX_LIMIT,
 } from '../pagination'
 
-// Lens has no circulating-supply data, so a market cap cannot be computed. It
-// used to be reported as a copy of `liquidity`; a caller who sorts or filters on
-// it must be told it is gone rather than have the parameter silently ignored.
-const MARKET_CAP_UNSUPPORTED =
-  'market_cap is not supported: Lens has no circulating supply data to compute it from. Use liquidity instead'
-
-/**
- * Liquidity Definition for /screener:
- * - Sources/Venues: Stellar AMM liquidity pools (source = 'AMM' in price_points,
- *   mapped to pool_snapshots for the pair).
- * - Valuation & Formula: Summed across all active AMM pools for the pair of
- *   `(reserve_a * spot_price + reserve_b)`. Since spot_price is quoted in
- *   `asset_b` per unit of `asset_a` (i.e. reserve_b / reserve_a), `reserve_a * spot_price`
- *   evaluates to the value of reserve_a denominated in asset_b.
- * - Unit: Denominated in the quote asset (counter asset, `asset_b`, the second asset
- *   in `pair_key` "BASE/QUOTE"). Named explicitly as `liquidity_unit` in each row.
- * - Prices: Spot price from the latest snapshot of each liquidity pool on the requested network.
- */
-
-/** Machine-readable code for the market_cap rejection (not a validation error). */
-const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
-
-const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as const
+// The query execution (filters, sorting, cursor pagination, the liquidity
+// definition and the [1, 100] limit clamp) lives in src/services/screener.ts
+// and is shared with the GraphQL `screener` query; this route owns only the
+// HTTP concerns: query-string validation and error shaping.
 
 const numFilter = (name: string) =>
   z.coerce.number({ error: `${name} must be a valid number` }).optional()
 
-export const SCREENER_DEFAULT_LIMIT = 20
-export const SCREENER_MAX_LIMIT = 100
-
 const ScreenerQuerySchema = z
   .object({
-    // Historical behavior: limit is clamped to [1, 100], never rejected.
-    // `GET /screener?limit=500` returns 100 rows, `limit=0` behaves as 1.
+    // Historical behavior: limit is clamped to [1, 100] inside runScreener,
+    // never rejected. `GET /screener?limit=500` returns 100 rows, `limit=0`
+    // behaves as 1.
     limit: z.coerce
       .number({ error: 'limit must be a valid integer' })
       .int({ error: 'limit must be a valid integer' })
-      .default(SCREENER_DEFAULT_LIMIT)
-      .transform((v) => Math.min(SCREENER_MAX_LIMIT, Math.max(1, v))),
+      .default(SCREENER_DEFAULT_LIMIT),
     sortBy: z.string().default('volume'),
     order: z
       .preprocess(
@@ -262,14 +247,19 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
 
       return {
         network: req.network ?? activeNetwork,
-        data: data.map((row) => ({
-          ...row,
-          liquidity_unit: row.pair_key.split('/')[1] ?? 'quote',
-        })),
-        nextCursor,
-        hasMore,
-        total: null,
-      }
+        filters: {
+          volume: parsed.data.volume,
+          change_24h_min: parsed.data.change_24h_min,
+          change_24h_max: parsed.data.change_24h_max,
+          price_min: parsed.data.price_min,
+          price_max: parsed.data.price_max,
+          liquidity: parsed.data.liquidity,
+        },
+        sortBy,
+        order,
+        cursor,
+        limit,
+      })
     } catch (error) {
       console.error('[screener]', error)
       return reply.status(500).send(apiError('internal_error', 'Internal server error'))
