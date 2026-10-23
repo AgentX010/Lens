@@ -72,9 +72,23 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
+## Venues
+
+<!-- VENUES:START -->
+| Venue | Source | Type | Description |
+|---|---|---|---|
+| SDEX | `SDEX` | Order Book | Stellar's Classic Order Book (SDEX) |
+| AMM | `AMM` | Liquidity Pool | Stellar native AMM liquidity pools (Horizon) |
+| Soroswap | `soroswap_amm` | AMM DEX | Soroswap constant-product automated market maker on Soroban |
+| Aquarius | `aquarius_amm` | Liquidity Pool | Aquarius AMM liquidity pools |
+| DeFindex | `defindex_vault` | Vault | DeFindex yield vaults on Soroban, priced per share |
+| Phoenix | `phoenix_amm` | Liquidity Pool | Phoenix AMM pools on Soroban |
+<!-- VENUES:END -->
+
 ## Endpoints
 
 ### REST
+<!-- ENDPOINTS:START -->
 | Method | Path | Description |
 |---|---|---|
 | GET | `/v1/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
@@ -121,6 +135,8 @@ two forms answer differently. Operator-only and non-HTTP routes (`/admin/keys*`,
 `/admin/usage*`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
+
+All routes are partitioned into three security and CORS tiers (`public`, `credentialed`, and `admin`) with a split CORS policy — see the [Route Classification & CORS Guide](docs/routes.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a

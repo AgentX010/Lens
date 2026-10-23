@@ -38,6 +38,7 @@ import { registerApiVersioning, rewriteVersionedApiUrl } from './api/versioning'
 import { getMetrics } from './metrics'
 import { loggerOptions, createDestination } from './logger'
 import { isPoolExhaustionError, recordPoolExhaustion } from './db'
+import { createCorsDelegator, type CorsConfig } from './cors'
 
 /**
  * Routes the rate limiter skips.
@@ -58,6 +59,10 @@ export interface BuildAppOptions {
    * routes — a duplicated list would drift and defeat the point.
    */
   onRoute?: (routeOptions: RouteOptions) => void
+  /**
+   * Optional CORS configuration override (useful in testing).
+   */
+  corsConfig?: CorsConfig
 }
 
 /**
