@@ -1080,20 +1080,25 @@ describe('bazaar_search discovery routing', () => {
     expect(JSON.parse(response.content[0].text)).toEqual(body);
   });
 
-  it('maps an empty resources array to ERR_NO_RESULTS', async () => {
+  it('returns an empty resources array as a success, not an error (#414)', async () => {
+    // "I searched and there were none" is a successful search. Handed an error,
+    // an agent retries, rephrases, or reports a failure to the user — none of
+    // which is the right response to an empty set, and all of which cost a paid
+    // call. The empty collection is the answer.
     const { callTool } = searchHarness(() => jsonResponse({ resources: [] }));
 
     const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(body.resources).toEqual([]);
+    // Explicit, not merely absent: the agent can tell "none matched" from a
+    // response whose shape it did not understand.
+    expect(body.isError).toBeUndefined();
+    expect(body.code).toBeUndefined();
   });
 
-  it('maps an empty top-level array to ERR_NO_RESULTS', async () => {
+  it('returns an empty top-level array as a success, not an error (#414)', async () => {
     const { callTool } = searchHarness(() => jsonResponse([]));
 
     const response = await callTool('bazaar_search', {
@@ -1101,12 +1106,9 @@ describe('bazaar_search discovery routing', () => {
       query: 'nothing indexed yet',
     });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(Array.isArray(body) ? body : body.items ?? body.resources).toEqual([]);
   });
 
   it('maps a non-2xx response to ERR_SERVICE_UNREACHABLE with the status in the reason', async () => {

@@ -139,7 +139,13 @@ async function main() {
       const data = JSON.parse(searchResult.content[0].text);
       if (Array.isArray(data.resources) && data.resources.length > 0) {
         paidEndpoint = data.resources[0].url;
-      } else if (data.count === 0) {
+      } else {
+        // The point of #414: an empty result is a successful search, so the
+        // agent says "none matched" and moves on rather than treating it as a
+        // failure to retry — a retry here is a paid call for a question already
+        // answered. Keyed off the empty collection, not a count field:
+        // /discovery/search reports `totalMatched`, and another bazaar node may
+        // send neither.
         console.log('[agent] Search completed with no matching resources.');
       }
     }
