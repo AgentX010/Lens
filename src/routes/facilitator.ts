@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import { TransactionBuilder } from '@stellar/stellar-sdk'
+import { TransactionBuilder, scValToNative } from '@stellar/stellar-sdk'
+import { extractBearer, lookupApiKey } from '../api/auth'
 import { rpc } from '@stellar/stellar-sdk'
 import { prisma } from '../db'
 import { getNetworkConfig, type NetworkName } from '../config'
@@ -54,6 +55,53 @@ interface SettleRequestBody {
  * transaction we can parse, which is a malformed request rather than a
  * settlement failure.
  */
+
+/**
+ * Authoritatively decodes the payment amount directly from the signed transaction XDR
+ * rather than trusting user-supplied paymentRequirements.amount.
+ */
+export function extractAuthoritativeAmount(transactionXdr: string, network: NetworkName): number | null {
+  try {
+    const passphrase = getNetworkConfig(network).network.passphrase
+    const tx = TransactionBuilder.fromXDR(transactionXdr, passphrase)
+    let total = 0
+    let hasPayment = false
+    for (const op of tx.operations) {
+      if (op.type === 'payment' && 'amount' in op && typeof op.amount === 'string') {
+        total += parseFloat(op.amount)
+        hasPayment = true
+      } else if (op.type === 'pathPaymentStrictReceive' && 'destAmount' in op && typeof op.destAmount === 'string') {
+        total += parseFloat(op.destAmount)
+        hasPayment = true
+      } else if (op.type === 'pathPaymentStrictSend' && 'sendAmount' in op && typeof op.sendAmount === 'string') {
+        total += parseFloat(op.sendAmount)
+        hasPayment = true
+      } else if (op.type === 'invokeHostFunction' && 'func' in op) {
+        try {
+          const func = (op as any).func
+          if (func && typeof func.invokeContract === 'function') {
+            const invokeArgs = func.invokeContract()
+            const fnName = invokeArgs.functionName().toString()
+            const args = invokeArgs.args()
+            if ((fnName === 'transfer' || fnName === 'transfer_from') && Array.isArray(args) && args.length >= 3) {
+              const nativeVal = scValToNative(args[2])
+              if (typeof nativeVal === 'bigint' || typeof nativeVal === 'number') {
+                total += Number(nativeVal) / 1e7
+                hasPayment = true
+              }
+            }
+          }
+        } catch {
+          // Soroban parsing error falls through to fail-closed check
+        }
+      }
+    }
+    return hasPayment ? total : null
+  } catch {
+    return null
+  }
+}
+
 export function deriveIdempotencyKey(transactionXdr: string, network: NetworkName): string | null {
   try {
     const passphrase = getNetworkConfig(network).network.passphrase
@@ -189,9 +237,34 @@ export async function registerSettleRoute(app: FastifyInstance) {
           )
       }
 
-      // ── Spend ceiling check (#147) ──────────────────────────────────────────
+      // ── Spend ceiling checks (#147) ──────────────────────────────────────────
       const spendCeiling = parseFloat(process.env.FACILITATOR_SPEND_CEILING ?? '0')
-      const requestedAmount = parseFloat(typeof body.paymentRequirements?.amount === 'string' ? body.paymentRequirements.amount : '0')
+      const dailyCeilingVar = network === 'mainnet' ? 'FACILITATOR_DAILY_CEILING_MAINNET' : 'FACILITATOR_DAILY_CEILING_TESTNET'
+      const dailyCeiling = parseFloat(process.env[dailyCeilingVar] ?? '0')
+      const ceilingConfigured = spendCeiling > 0 || dailyCeiling > 0
+
+      const authAmount = extractAuthoritativeAmount(transactionXdr, network)
+
+      // Fail-closed when a ceiling is configured but the authoritative amount
+      // cannot be extracted from the transaction envelope. Refusing to settle an
+      // unverified amount is safe; falling back to payer-supplied numbers is not.
+      if (ceilingConfigured && authAmount === null) {
+        req.log.warn({ txHash, network }, '[facilitator] Cannot verify authoritative settlement amount from XDR with ceiling configured')
+        return reply.code(400).send(
+          settleFailure(
+            txHash,
+            caip2,
+            'unverifiable_settlement_amount',
+            'Cannot verify authoritative settlement amount from transaction envelope while spend ceiling is configured.',
+          ),
+        )
+      }
+
+      const requestedAmount =
+        authAmount !== null
+          ? authAmount
+          : (typeof body.paymentRequirements?.amount === 'string' ? parseFloat(body.paymentRequirements.amount) : 0)
+
       if (spendCeiling > 0 && requestedAmount > spendCeiling) {
         req.log.warn({ requestedAmount, spendCeiling, network }, '[facilitator] Settlement amount exceeds spend ceiling')
         return reply.code(400).send(
@@ -205,11 +278,25 @@ export async function registerSettleRoute(app: FastifyInstance) {
       }
 
       // ── Daily ceiling per network (#147) ───────────────────────────────────
-      const dailyCeilingVar = network === 'mainnet' ? 'FACILITATOR_DAILY_CEILING_MAINNET' : 'FACILITATOR_DAILY_CEILING_TESTNET'
-      const dailyCeiling = parseFloat(process.env[dailyCeilingVar] ?? '0')
       if (dailyCeiling > 0) {
         const startOfDay = new Date()
         startOfDay.setUTCHours(0, 0, 0, 0)
+        let totalSpentToday = 0
+        if (typeof (prisma.settlementAttempt as any).findMany === 'function') {
+          try {
+            const settledToday = await prisma.settlementAttempt.findMany({
+              where: {
+                network,
+                state: 'settled',
+                createdAt: { gte: startOfDay },
+              },
+              select: { amount: true },
+            })
+            if (Array.isArray(settledToday)) {
+              totalSpentToday = settledToday.reduce((sum, row) => sum + parseFloat(row.amount ?? '0'), 0)
+            }
+          } catch {}
+        }
         const dailyCount = await prisma.settlementAttempt.count({
           where: {
             network,
@@ -217,7 +304,7 @@ export async function registerSettleRoute(app: FastifyInstance) {
             createdAt: { gte: startOfDay },
           },
         })
-        if (dailyCount >= dailyCeiling) {
+        if (dailyCount >= dailyCeiling || (totalSpentToday > 0 && totalSpentToday + requestedAmount > dailyCeiling)) {
           req.log.error({ dailyCount, dailyCeiling, network }, '[facilitator] Daily settlement limit reached for network')
           return reply.code(429).send(
             settleFailure(
@@ -231,19 +318,34 @@ export async function registerSettleRoute(app: FastifyInstance) {
       }
 
       // ── Caller allow-list check (#147) ──────────────────────────────────────
-      const allowlist = process.env.FACILITATOR_CALLER_ALLOWLIST ?? process.env.FACILITATOR_ALLOWED_ORIGINS
+      // Identity comes strictly from authenticated API key ID (req.apiKey.id or bearer token lookup).
+      // We deliberately refuse caller-supplied headers (origin, x-caller-id) and body fields (payTo)
+      // to ensure the allow-list cannot be bypassed by forging headers.
+      const allowlist = process.env.FACILITATOR_CALLER_ALLOWLIST
       if (allowlist && allowlist.trim() !== '') {
         const allowed = allowlist.split(',').map((s) => s.trim().toLowerCase())
-        const payTo = String(body.paymentRequirements?.payTo ?? '').toLowerCase()
-        const origin = String(req.headers['origin'] ?? req.headers['x-caller-id'] ?? '').toLowerCase()
-        if (!allowed.includes(payTo) && !allowed.includes(origin)) {
-          req.log.warn({ payTo, origin, allowed }, '[facilitator] Caller or destination not on allow-list')
+        let callerKeyId = (req.apiKey?.id ?? '').toLowerCase()
+        if (!callerKeyId && req.headers['authorization']) {
+          const token = extractBearer(req.headers['authorization'])
+          if (token) {
+            try {
+              const lookedUp = await lookupApiKey(token)
+              if (lookedUp) {
+                callerKeyId = lookedUp.id.toLowerCase()
+              }
+            } catch {}
+          }
+        }
+
+        const isAllowed = Boolean(callerKeyId && allowed.includes(callerKeyId))
+        if (!isAllowed) {
+          req.log.warn({ callerKeyId, allowed }, '[facilitator] Caller API key ID not on allow-list')
           return reply.code(403).send(
             settleFailure(
               txHash,
               caip2,
               'caller_not_allowed',
-              'Caller or recipient is not on the facilitator allow-list.',
+              'Caller API key is not on the facilitator allow-list.',
             ),
           )
         }
@@ -273,7 +375,7 @@ export async function registerSettleRoute(app: FastifyInstance) {
           state: 'submitting',
           payTo: typeof body.paymentRequirements?.payTo === 'string' ? body.paymentRequirements.payTo : null,
           asset: typeof body.paymentRequirements?.asset === 'string' ? body.paymentRequirements.asset : null,
-          amount: typeof body.paymentRequirements?.amount === 'string' ? body.paymentRequirements.amount : null,
+          amount: authAmount !== null ? String(authAmount) : (typeof body.paymentRequirements?.amount === 'string' ? body.paymentRequirements.amount : null),
         },
       })
       attemptId = attempt.id

@@ -38,6 +38,25 @@ vi.mock('../x402/facilitator', async importOriginal => {
   return { ...actual, getFacilitator: mockGetFacilitator }
 })
 
+vi.mock('../api/auth', async importOriginal => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return {
+    ...actual,
+    lookupApiKey: vi.fn(async (key: string) => {
+      if (key === 'valid-secret-key') {
+        return {
+          id: 'trusted-key-id',
+          label: 'trusted',
+          ratePerMin: 100,
+          ratePerDay: 1000,
+          scopes: [],
+        }
+      }
+      return null
+    }),
+  }
+})
+
 vi.mock('@stellar/stellar-sdk', async importOriginal => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return {
@@ -438,23 +457,50 @@ describe('Hardened x402 Facilitator Controls (#147)', () => {
     delete process.env.FACILITATOR_DAILY_CEILING_TESTNET
     delete process.env.FACILITATOR_DAILY_CEILING_MAINNET
     delete process.env.FACILITATOR_CALLER_ALLOWLIST
+    delete process.env.FACILITATOR_ALLOWED_CALLERS
     delete process.env.FACILITATOR_ALLOWED_ORIGINS
   })
 
-  it('rejects settlements exceeding per-settlement spend ceiling before submission', async () => {
-    process.env.FACILITATOR_SPEND_CEILING = '50'
+  it('rejects settlements exceeding per-settlement spend ceiling based on authoritative amount', async () => {
+    process.env.FACILITATOR_SPEND_CEILING = '0.5' // TESTNET_ENVELOPE has authoritative amount = 1 XLM > 0.5
     const app = await buildApp()
 
     const res = await app.inject({
       method: 'POST',
       url: '/settle',
-      payload: settleBody({ amount: '100' }),
+      payload: settleBody(),
     })
 
     expect(res.statusCode).toBe(400)
     const body = res.json()
     expect(body.success).toBe(false)
     expect(body.errorReason).toBe('spend_ceiling_exceeded')
+    expect(mockSettle).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when ceiling is configured and authoritative amount cannot be decoded (#147)', async () => {
+    process.env.FACILITATOR_SPEND_CEILING = '50'
+    const app = await buildApp()
+
+    const keypair = Keypair.random()
+    const account = new Account(keypair.publicKey(), '1')
+    const tx = new TransactionBuilder(account, { fee: '100', networkPassphrase: Networks.TESTNET })
+      .addOperation(Operation.manageData({ name: 'test', value: 'data' }))
+      .setTimeout(60)
+      .build()
+    tx.sign(keypair)
+    const nonPaymentEnvelope = tx.toXDR()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody({ transaction: nonPaymentEnvelope }),
+    })
+
+    expect(res.statusCode).toBe(400)
+    const body = res.json()
+    expect(body.success).toBe(false)
+    expect(body.errorReason).toBe('unverifiable_settlement_amount')
     expect(mockSettle).not.toHaveBeenCalled()
   })
 
@@ -491,15 +537,16 @@ describe('Hardened x402 Facilitator Controls (#147)', () => {
     expect(mockSettle).toHaveBeenCalledTimes(1)
   })
 
-  it('refuses callers not on the allowlist when allowlist is configured', async () => {
-    process.env.FACILITATOR_CALLER_ALLOWLIST = 'GALLOWEDPAYEE,https://trusted-merchant.com'
+  it('refuses callers not on the allowlist when allowlist is configured, rejecting forged origin and caller headers', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'trusted-key-id'
     const app = await buildApp()
 
     const res = await app.inject({
       method: 'POST',
       url: '/settle',
       headers: {
-        'x-caller-id': 'https://untrusted-attacker.com',
+        'x-caller-id': 'trusted-key-id', // Caller-supplied headers must NOT bypass allowlist
+        origin: 'https://trusted-key-id.com',
       },
       payload: settleBody(),
     })
@@ -511,21 +558,41 @@ describe('Hardened x402 Facilitator Controls (#147)', () => {
     expect(mockSettle).not.toHaveBeenCalled()
   })
 
-  it('permits callers on the allowlist when configured', async () => {
-    process.env.FACILITATOR_CALLER_ALLOWLIST = 'GALLOWEDPAYEE,https://trusted-merchant.com'
+  it('permits callers on the allowlist when authenticated via API key', async () => {
+    process.env.FACILITATOR_CALLER_ALLOWLIST = 'trusted-key-id'
     const app = await buildApp()
 
     const res = await app.inject({
       method: 'POST',
       url: '/settle',
       headers: {
-        origin: 'https://trusted-merchant.com',
+        authorization: 'Bearer valid-secret-key',
       },
       payload: settleBody(),
     })
 
     expect(res.statusCode).toBe(200)
     expect(mockSettle).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists authoritative decoded amount into settlementAttempt rather than user-supplied amount', async () => {
+    const app = await buildApp()
+
+    // Settle with TESTNET_ENVELOPE (which contains 1 XLM), while paymentRequirements.amount is '1000000'
+    const res = await app.inject({
+      method: 'POST',
+      url: '/settle',
+      payload: settleBody(),
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: '1', // Decoded from XDR, not '1000000'
+        }),
+      }),
+    )
   })
 
   it('replaying an identical settle returns the stored answer and submits exactly once', async () => {
@@ -554,4 +621,3 @@ describe('Hardened x402 Facilitator Controls (#147)', () => {
     expect(mockSettle).toHaveBeenCalledTimes(0) // Exactly zero re-submissions!
   })
 })
-
