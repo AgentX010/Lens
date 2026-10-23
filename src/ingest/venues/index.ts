@@ -2,6 +2,8 @@ import { sdexAdapter } from './sdex'
 import { ammAdapter } from './amm'
 import { soroswapAdapter } from './soroswap'
 import { aquariusAdapter } from './aquarius'
+import { defindexAdapter } from './defindex'
+import { phoenixAdapter } from './phoenix'
 import type { VenueAdapter } from './types'
 
 export * from './types'
@@ -10,6 +12,8 @@ export { sdexAdapter, startSDEXIngester } from './sdex'
 export { ammAdapter, startAMMIngester } from './amm'
 export { soroswapAdapter, startSoroswapIngester } from './soroswap'
 export { aquariusAdapter, startAquariusIngester } from './aquarius'
+export { defindexAdapter, startDeFindexIngester } from './defindex'
+export { phoenixAdapter, startPhoenixIngester } from './phoenix'
 
 /**
  * Registry of all available venue adapters.
@@ -21,6 +25,8 @@ export const venueAdapters: VenueAdapter[] = [
   ammAdapter,
   soroswapAdapter,
   aquariusAdapter,
+  defindexAdapter,
+  phoenixAdapter,
 ]
 
 export interface VenueClassificationInfo {
@@ -82,6 +88,34 @@ export const VENUE_CLASSIFICATIONS: Record<string, VenueClassificationInfo> = {
     classification: 'aggregator',
     reasoning:
       'Aquarius operates as an aggregator/liquidity layer on Stellar, quoting and routing through underlying Stellar native AMM pools and SDEX orderbooks. Counting its trades alongside primary venues double-counts the same underlying trade executions.',
+  },
+  phoenix_amm: {
+    name: 'Phoenix',
+    source: 'phoenix_amm',
+    classification: 'primary',
+    reasoning:
+      'Constant-product AMM pools on Soroban. Each pool contract holds its own reserves, so trades against it are independent executions.',
+  },
+  Phoenix: {
+    name: 'Phoenix',
+    source: 'phoenix_amm',
+    classification: 'primary',
+    reasoning:
+      'Constant-product AMM pools on Soroban. Each pool contract holds its own reserves, so trades against it are independent executions.',
+  },
+  defindex_vault: {
+    name: 'DeFindex',
+    source: 'defindex_vault',
+    classification: 'aggregator',
+    reasoning:
+      'Yield vaults on Soroban that hold no market of their own: deposits are allocated to underlying strategies (e.g. lending pools) and the vault is priced per share. Any activity it reports is activity of the venues underneath, so it is never counted toward net volume.',
+  },
+  DeFindex: {
+    name: 'DeFindex',
+    source: 'defindex_vault',
+    classification: 'aggregator',
+    reasoning:
+      'Yield vaults on Soroban that hold no market of their own: deposits are allocated to underlying strategies (e.g. lending pools) and the vault is priced per share. Any activity it reports is activity of the venues underneath, so it is never counted toward net volume.',
   },
 }
 

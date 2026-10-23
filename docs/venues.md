@@ -27,6 +27,8 @@ To solve this, Lens classifies every venue in the venue registry as either a **p
 | **AMM** | `AMM` | `primary` | **Stellar Native Liquidity Pools (CAP-0038)**: Protocol-level constant-product liquidity pools. Liquidity providers deposit assets directly into on-chain pool reserves. Trades execute against pool reserves directly on the ledger. Each trade represents primary liquidity consumption in the pool. |
 | **Soroswap** | `soroswap_amm` | `primary` | **Soroswap AMM**: Automated market maker smart contracts deployed on the Soroban smart contract platform. Pairs hold isolated pool reserves locked in Soroban contract instances deposited directly by LPs. Trades execute against the contracts' own reserves rather than routing to other venues. |
 | **Aquarius** | `aquarius_amm` | `aggregator` | **Aquarius**: On classic Stellar, Aquarius acts as a liquidity aggregator and incentive layer. It quotes and routes trades through underlying Stellar native AMM liquidity pools (`pool_hash`) and SDEX orderbooks rather than settling against an isolated, independent liquidity source. Counting Aquarius volume alongside SDEX and native AMM trades double-counts the same underlying trades. |
+| **Phoenix** | `phoenix_amm` | `primary` | **Phoenix AMM**: Constant-product liquidity pools on Soroban. Each pool contract holds its own reserves deposited by LPs, and trades execute against those reserves rather than being routed elsewhere. |
+| **DeFindex** | `defindex_vault` | `aggregator` | **DeFindex Vaults**: Yield vaults on Soroban priced per share. A vault holds no market of its own: deposits are allocated to underlying strategies such as lending pools, so any activity it reports belongs to the venues underneath. It is excluded from net volume. |
 
 ---
 
@@ -64,7 +66,7 @@ The aggregated volume endpoint (`GET /volumes/:asset`) reports both figures with
 }
 ```
 
-- **`totals.net` / `netVolume`**: Traded volume summed across primary markets only (`SDEX`, `AMM`, `soroswap_amm`). This is the true, non-duplicated ecosystem trading volume.
-- **`totals.gross` / `grossVolume`**: Total volume across all reporting venues including aggregators (`aquarius_amm`).
+- **`totals.net` / `netVolume`**: Traded volume summed across primary markets only (`SDEX`, `AMM`, `soroswap_amm`, `phoenix_amm`). This is the true, non-duplicated ecosystem trading volume.
+- **`totals.gross` / `grossVolume`**: Total volume across all reporting venues including aggregators (`aquarius_amm`, `defindex_vault`).
 - **`totalVolume`**: Preserved for backward compatibility, reporting `netVolume` to ensure callers do not overstate real activity.
 - **`byVenue`**: Granular breakdown of reported volume by venue source string.
