@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { pgPool } from '../db'
 import { activeNetwork } from '../config'
+import { formatValidationError, VALIDATION_ERROR_CODE } from '../validation'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
 // Lens has no circulating-supply data, so a market cap cannot be computed. It
@@ -8,6 +10,80 @@ import '../middleware/network' // declares req.network on the FastifyRequest typ
 // it must be told it is gone rather than have the parameter silently ignored.
 const MARKET_CAP_UNSUPPORTED =
   'market_cap is not supported: Lens has no circulating supply data to compute it from. Use liquidity instead'
+
+/**
+ * Liquidity Definition for /screener:
+ * - Sources/Venues: Stellar AMM liquidity pools (source = 'AMM' in price_points,
+ *   mapped to pool_snapshots for the pair).
+ * - Valuation & Formula: Summed across all active AMM pools for the pair of
+ *   `(reserve_a * spot_price + reserve_b)`. Since spot_price is quoted in
+ *   `asset_b` per unit of `asset_a` (i.e. reserve_b / reserve_a), `reserve_a * spot_price`
+ *   evaluates to the value of reserve_a denominated in asset_b.
+ * - Unit: Denominated in the quote asset (counter asset, `asset_b`, the second asset
+ *   in `pair_key` "BASE/QUOTE"). Named explicitly as `liquidity_unit` in each row.
+ * - Prices: Spot price from the latest snapshot of each liquidity pool on the requested network.
+ */
+
+/** Machine-readable code for the market_cap rejection (not a validation error). */
+const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
+
+const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as const
+
+const numFilter = (name: string) =>
+  z.coerce.number({ error: `${name} must be a valid number` }).optional()
+
+export const SCREENER_DEFAULT_LIMIT = 20
+export const SCREENER_MAX_LIMIT = 100
+
+const ScreenerQuerySchema = z
+  .object({
+    // Historical behavior: limit is clamped to [1, 100], never rejected.
+    // `GET /screener?limit=500` returns 100 rows, `limit=0` behaves as 1.
+    limit: z.coerce
+      .number({ error: 'limit must be a valid integer' })
+      .int({ error: 'limit must be a valid integer' })
+      .default(SCREENER_DEFAULT_LIMIT)
+      .transform((v) => Math.min(SCREENER_MAX_LIMIT, Math.max(1, v))),
+    sortBy: z.string().default('volume'),
+    order: z
+      .preprocess(
+        (v) => (typeof v === 'string' ? v.toLowerCase() : v),
+        z.enum(['asc', 'desc'])
+      )
+      .default('desc'),
+    volume: numFilter('volume'),
+    change_24h_min: numFilter('change_24h_min'),
+    change_24h_max: numFilter('change_24h_max'),
+    price_min: numFilter('price_min'),
+    price_max: numFilter('price_max'),
+    liquidity: numFilter('liquidity'),
+    cursor: z.string().optional(),
+    // market_cap is declared only so the rejection below goes through the
+    // shared error formatter like every other rejection.
+    market_cap: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.market_cap !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['market_cap'],
+        message: MARKET_CAP_UNSUPPORTED,
+      })
+    }
+    if (data.sortBy === 'market_cap') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sortBy'],
+        message: MARKET_CAP_UNSUPPORTED,
+      })
+    } else if (!(ALLOWED_SORT_FIELDS as readonly string[]).includes(data.sortBy)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sortBy'],
+        message: `sortBy must be one of: ${ALLOWED_SORT_FIELDS.join(', ')}`,
+      })
+    }
+  })
 
 export async function registerScreenerRoutes(app: FastifyInstance) {
   app.get<{
@@ -24,46 +100,35 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       cursor?: string
       limit?: string
     }
-  }>('/screener', async (req, reply) => {
+  }>('/screener', { config: { scope: 'read:prices' } }, async (req, reply) => {
+    const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query
 
-      // 1. Parse and validate pagination & sorting
-      const limit = Math.min(Math.max(parseInt(q.limit ?? '20', 10), 1), 100)
-      if (isNaN(limit)) {
-        return reply.status(400).send({ error: 'limit must be a valid integer' })
+      const parsed = ScreenerQuerySchema.safeParse(q)
+      if (!parsed.success) {
+        // market_cap is not a validation error but an unsupported parameter;
+        // it keeps its own machine-readable code while using the shared shape.
+        const marketCapRejected = parsed.error.issues.some(
+          (issue) => issue.path[0] === 'market_cap'
+        )
+        return reply
+          .status(400)
+          .send(
+            formatValidationError(
+              parsed.error,
+              marketCapRejected ? MARKET_CAP_CODE : VALIDATION_ERROR_CODE
+            )
+          )
       }
-
-      if (q.market_cap !== undefined || q.sortBy === 'market_cap') {
-        return reply.status(400).send({ error: MARKET_CAP_UNSUPPORTED })
-      }
-
-      const allowedSortFields = ['volume', 'change_24h', 'price', 'liquidity']
-      const sortBy = q.sortBy ?? 'volume'
-      if (!allowedSortFields.includes(sortBy)) {
-        return reply.status(400).send({ error: `sortBy must be one of: ${allowedSortFields.join(', ')}` })
-      }
-
-      const order = (q.order ?? 'desc').toLowerCase()
-      if (order !== 'asc' && order !== 'desc') {
-        return reply.status(400).send({ error: 'order must be asc or desc' })
-      }
-
-      // 2. Parse filters
-      const parseNum = (val?: string) => val ? parseFloat(val) : undefined
+      const { limit, sortBy, order, cursor } = parsed.data
       const filters = {
-        volume: parseNum(q.volume),
-        change_24h_min: parseNum(q.change_24h_min),
-        change_24h_max: parseNum(q.change_24h_max),
-        price_min: parseNum(q.price_min),
-        price_max: parseNum(q.price_max),
-        liquidity: parseNum(q.liquidity),
-      }
-
-      for (const [key, val] of Object.entries(filters)) {
-        if (val !== undefined && isNaN(val)) {
-          return reply.status(400).send({ error: `Filter ${key} must be a valid number` })
-        }
+        volume: parsed.data.volume,
+        change_24h_min: parsed.data.change_24h_min,
+        change_24h_max: parsed.data.change_24h_max,
+        price_min: parsed.data.price_min,
+        price_max: parsed.data.price_max,
+        liquidity: parsed.data.liquidity,
       }
 
       // 3. Build query parameters and WHERE conditions
@@ -99,18 +164,18 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       }
 
       // 4. Cursor decoding and pagination condition
-      if (q.cursor) {
+      if (cursor) {
         try {
-          const decoded = Buffer.from(q.cursor, 'base64').toString('utf-8')
+          const decoded = Buffer.from(cursor, 'base64').toString('utf-8')
           const [lastVal, lastId] = JSON.parse(decoded)
-          
+
           if (lastVal !== null && lastVal !== undefined && lastId) {
             const op = order === 'desc' ? '<' : '>'
             conditions.push(`(${sortBy}, pair_key) ${op} ($${paramIdx++}, $${paramIdx++})`)
             params.push(lastVal, lastId)
           }
         } catch (e) {
-          return reply.status(400).send({ error: 'Invalid cursor format' })
+          return reply.status(400).send({ error: 'Invalid cursor format', code: 'VALIDATION_ERROR' })
         }
       }
 
@@ -183,13 +248,17 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       }
 
       return {
-        data,
+        network: req.network ?? activeNetwork,
+        data: data.map((row) => ({
+          ...row,
+          liquidity_unit: row.pair_key.split('/')[1] ?? 'quote',
+        })),
         nextCursor,
         hasMore,
         total: null,
       }
     } catch (error) {
-      console.error('[screener]', error)
+      log.error({ err: error }, 'screener query failed')
       return reply.status(500).send({ error: 'Internal server error' })
     }
   })

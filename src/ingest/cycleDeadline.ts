@@ -33,7 +33,10 @@
  */
 
 import type { NetworkName } from '../config'
+import { createLogger } from '../logger'
 import { ingester_abandoned_cycles_total } from '../metrics'
+
+const log = createLogger('cycle-deadline')
 
 /**
  * Default cycle deadline (ms) when no environment override is set.
@@ -87,8 +90,9 @@ function readDeadlineMs(raw: string | undefined, envKey: string): number | undef
   if (raw === undefined || raw.trim() === '') return undefined
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed < 0) {
-    console.warn(
-      `[cycle-deadline] ${envKey}="${raw}" is not a non-negative number of milliseconds; ignoring it`
+    log.warn(
+      { envKey, value: raw },
+      'cycle deadline override is not a non-negative number of milliseconds; ignoring it'
     )
     return undefined
   }
@@ -188,9 +192,9 @@ export async function runCycleWithDeadline(opts: {
 
     if (first === 'deadline') {
       ingester_abandoned_cycles_total.inc({ venue, network })
-      console.error(
-        `[cycle-deadline] ${venue}/${network} cycle abandoned after exceeding its ${deadlineMs}ms deadline ` +
-          `(elapsed ${Date.now() - startedAt}ms)`
+      log.error(
+        { venue, network, deadlineMs, elapsedMs: Date.now() - startedAt },
+        'cycle abandoned after exceeding its deadline'
       )
 
       // Start the next cycle only once this one has unwound — overlap must
@@ -200,10 +204,10 @@ export async function runCycleWithDeadline(opts: {
       // (bounded by that call's own timeout). If even that does not settle
       // within the grace window we refuse to overlap anyway — and say so.
       const graceTimer = setTimeout(() => {
-        console.error(
-          `[cycle-deadline] ${venue}/${network} abandoned cycle still has not unwound ` +
-            `${CYCLE_UNWIND_GRACE_MS}ms after its abort — holding the loop open rather than overlapping it; ` +
-            `an in-flight upstream call is ignoring its own timeout`
+        log.error(
+          { venue, network, graceMs: CYCLE_UNWIND_GRACE_MS },
+          'abandoned cycle has not unwound after its abort — holding the loop open rather than overlapping it; ' +
+            'an in-flight upstream call is ignoring its own timeout'
         )
       }, CYCLE_UNWIND_GRACE_MS)
 

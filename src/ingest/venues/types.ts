@@ -16,7 +16,7 @@ export interface VenuePricePoint {
 }
 
 /**
- * Universal interface for all venue adapters (SDEX, Stellar AMM, Soroswap, Aquarius, etc.).
+ * Universal interface for all venue adapters (SDEX, Stellar AMM, Soroswap, Aquarius, Phoenix, etc.).
  *
  * Covers:
  * - discovery: enumerate active pools, orderbooks, or tokens for a pair
@@ -24,9 +24,27 @@ export interface VenuePricePoint {
  * - derive: compute spot price from invariant or calculate trade execution price
  * - write: persist price points, update indexer cursors, and dispatch events/webhooks
  */
+export type VenueKind = 'orderbook' | 'amm' | 'oracle' | 'unknown'
+
 export interface VenueAdapter<TTarget = any, TRaw = any> {
   readonly name: string
   readonly source: string
+  /** Kind is descriptive metadata used by API projections, not the runner. */
+  readonly kind?: VenueKind
+
+  /**
+   * How this venue is described in the README's generated venue table (#229):
+   * `type` is the market structure ('Order Book', 'Liquidity Pool', ...) and
+   * `description` is the one-line explanation a reader needs.
+   *
+   * Both are **required**, which is the point. The table used to be hand-written
+   * and was already out of date; generating it from the registry only fixes that
+   * if a new adapter cannot be registered without describing itself. Optional
+   * fields with a fallback would grow a row that reads as documented and says
+   * nothing - the same drift in a new place.
+   */
+  readonly type: string
+  readonly description: string
 
   /**
    * Whether this venue adapter is enabled on the given network.

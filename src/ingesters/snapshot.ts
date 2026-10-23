@@ -2,7 +2,10 @@ import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getActivePairs } from '../pairsRegistry'
 import { price_snapshots_total } from '../metrics'
+import { createLogger } from '../logger'
 import { runCycleWithDeadline } from '../ingest/cycleDeadline'
+
+const log = createLogger('ingester:snapshot')
 
 /**
  * Floors a Date down to the start of its minute (seconds/millis zeroed).
@@ -79,7 +82,7 @@ function sleep(ms: number) {
  * volume window cleanly covers the minute that just elapsed.
  */
 export async function startSnapshotIngester(network: NetworkName = activeNetwork): Promise<void> {
-  console.log(`[snapshot] Starting 1-minute snapshot ingester for ${getActivePairs().length} pairs on ${network}`)
+  log.info({ network, pairs: getActivePairs().length }, 'starting 1-minute snapshot ingester')
 
   while (true) {
     // Sleep until the next minute boundary.
@@ -101,11 +104,11 @@ export async function startSnapshotIngester(network: NetworkName = activeNetwork
         cycle: async (signal) => {
           if (signal.aborted) return
           const n = await appendSnapshots(new Date(), network)
-          if (n > 0) console.log(`[snapshot] appended ${n} snapshot(s) on ${network}`)
+          if (n > 0) log.info({ network, snapshots: n }, 'appended snapshots')
         },
       })
     } catch (err) {
-      console.error(`[snapshot] Error appending snapshots on ${network}:`, (err as Error).message)
+      log.error({ network, err }, 'error appending snapshots')
     }
   }
 }

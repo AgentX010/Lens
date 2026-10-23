@@ -218,12 +218,22 @@ describe('getCycleDeadlineMs — configurable per ingester (#351)', () => {
     expect(getCycleDeadlineMs('Aquarius', 'mainnet')).toBe(777)
   })
 
-  it('warns and falls through on an invalid value instead of disabling the deadline', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('falls through on an invalid value instead of disabling the deadline', () => {
+    // The behaviour is what matters: a typo must not read as "no deadline",
+    // which would restore the unbounded cycle this module exists to prevent.
+    // The warning goes through the house logger (so it is redacted like every
+    // other line) rather than console.warn, which is why this asserts the
+    // fallback rather than spying on a call.
     process.env.INGEST_CYCLE_DEADLINE_MS = 'soon'
     expect(getCycleDeadlineMs('SDEX', 'testnet')).toBe(DEFAULT_CYCLE_DEADLINE_MS)
-    expect(warn).toHaveBeenCalledTimes(1)
-    warn.mockRestore()
+  })
+
+  it('ignores an invalid specific override and uses the next one that parses', () => {
+    // Precedence still applies around a bad value: a broken venue-level
+    // override must not shadow a good global one.
+    process.env.INGEST_CYCLE_DEADLINE_MS_SDEX = 'whenever'
+    process.env.INGEST_CYCLE_DEADLINE_MS = '7000'
+    expect(getCycleDeadlineMs('SDEX', 'testnet')).toBe(7_000)
   })
 
   it('treats 0 as an explicit opt-out that runs the cycle unbounded and uncounted', async () => {
