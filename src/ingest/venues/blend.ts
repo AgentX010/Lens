@@ -8,6 +8,7 @@
  * in their own table (lending_rates) rather than price_points.
  */
 
+import { runCycleWithDeadline } from '../cycleDeadline'
 import {
   Address,
   xdr,
@@ -521,7 +522,8 @@ export async function ingestBlendPool(
  */
 export async function ingestBlendPools(
   network: NetworkName,
-  ingestPool = ingestBlendPool
+  ingestPool = ingestBlendPool,
+  signal?: AbortSignal
 ): Promise<number> {
   const netConfig = getNetworkConfig(network)
   if (!netConfig.blend.enabled) {
@@ -530,6 +532,10 @@ export async function ingestBlendPools(
 
   let totalIngested = 0
   for (const poolId of netConfig.blend.pools) {
+    // Abandonment checkpoint (#351): the cycle deadline has fired, so do not
+    // start another pool. One pool is one write unit, so stopping here leaves
+    // nothing half-written.
+    if (signal?.aborted) break
     try {
       const rates = await ingestPool(poolId, network)
       totalIngested += rates.length
@@ -558,6 +564,12 @@ export const blendAdapter: VenueAdapter<BlendPoolData[], BlendReserveEntry[]> = 
   type: 'Lending Pool',
   description: 'Blend lending pools on Soroban, supply and borrow rates',
   source: 'blend',
+  // Informational here rather than load-bearing: `derive` returns no price
+  // points, so Blend contributes nothing to `/volumes` and never reaches the
+  // net/gross split (#244). It is 'primary' because it holds its own reserves —
+  // it is the venue a DeFindex vault allocates *into*, not one that re-reports
+  // another venue's trades.
+  classification: 'primary',
 
   isEnabled(network: NetworkName): boolean {
     return getNetworkConfig(network).blend.enabled
@@ -618,7 +630,18 @@ export async function startBlendIngester(
   let consecutiveErrors = 0
   while (true) {
     try {
-      await ingestBlendPools(network)
+      // Bounded like every other ingester (#351). Blend runs outside
+      // startVenueAdapterLoop — it writes lending_rates, not price_points — so
+      // without this its cycle has no upper bound: a slow Soroban RPC stretches
+      // one sweep indefinitely, the loop never crashes, restartIngester never
+      // fires, and the venue goes quiet with nothing raised anywhere.
+      await runCycleWithDeadline({
+        venue: 'Blend',
+        network,
+        cycle: async (signal) => {
+          await ingestBlendPools(network, ingestBlendPool, signal)
+        },
+      })
       consecutiveErrors = 0
     } catch (err) {
       consecutiveErrors++

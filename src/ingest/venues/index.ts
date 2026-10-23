@@ -111,6 +111,20 @@ export const VENUE_CLASSIFICATIONS: Record<string, VenueClassificationInfo> = {
     reasoning:
       'Yield vaults on Soroban that hold no market of their own: deposits are allocated to underlying strategies (e.g. lending pools) and the vault is priced per share. Any activity it reports is activity of the venues underneath, so it is never counted toward net volume.',
   },
+  blend: {
+    name: 'Blend',
+    source: 'blend',
+    classification: 'primary',
+    reasoning:
+      'Lending pools on Soroban holding their own supplied reserves. It is the venue a yield vault allocates into, not one that re-reports another venue trades. It emits no price points at all — rates go to lending_rates — so it contributes nothing to the volume totals and this classification is informational.',
+  },
+  Blend: {
+    name: 'Blend',
+    source: 'blend',
+    classification: 'primary',
+    reasoning:
+      'Lending pools on Soroban holding their own supplied reserves. It is the venue a yield vault allocates into, not one that re-reports another venue trades. It emits no price points at all — rates go to lending_rates — so it contributes nothing to the volume totals and this classification is informational.',
+  },
   DeFindex: {
     name: 'DeFindex',
     source: 'defindex_vault',
