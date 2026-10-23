@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { pgPool } from '../db'
 import { activeNetwork } from '../config'
 import {
   SCREENER_DEFAULT_LIMIT,
@@ -12,45 +11,23 @@ import {
 } from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
-// Lens has no circulating-supply data, so a market cap cannot be computed. It
-// used to be reported as a copy of `liquidity`; a caller who sorts or filters on
-// it must be told it is gone rather than have the parameter silently ignored.
-const MARKET_CAP_UNSUPPORTED =
-  'market_cap is not supported: Lens has no circulating supply data to compute it from. Use liquidity instead'
-
-/**
- * Liquidity Definition for /screener:
- * - Sources/Venues: Stellar AMM liquidity pools (source = 'AMM' in price_points,
- *   mapped to pool_snapshots for the pair).
- * - Valuation & Formula: Summed across all active AMM pools for the pair of
- *   `(reserve_a * spot_price + reserve_b)`. Since spot_price is quoted in
- *   `asset_b` per unit of `asset_a` (i.e. reserve_b / reserve_a), `reserve_a * spot_price`
- *   evaluates to the value of reserve_a denominated in asset_b.
- * - Unit: Denominated in the quote asset (counter asset, `asset_b`, the second asset
- *   in `pair_key` "BASE/QUOTE"). Named explicitly as `liquidity_unit` in each row.
- * - Prices: Spot price from the latest snapshot of each liquidity pool on the requested network.
- */
-
-/** Machine-readable code for the market_cap rejection (not a validation error). */
-const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
-
-const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as const
+// The query execution (filters, sorting, cursor pagination, the liquidity
+// definition and the [1, 100] limit clamp) lives in src/services/screener.ts
+// and is shared with the GraphQL `screener` query; this route owns only the
+// HTTP concerns: query-string validation and error shaping.
 
 const numFilter = (name: string) =>
   z.coerce.number({ error: `${name} must be a valid number` }).optional()
 
-export const SCREENER_DEFAULT_LIMIT = 20
-export const SCREENER_MAX_LIMIT = 100
-
 const ScreenerQuerySchema = z
   .object({
-    // Historical behavior: limit is clamped to [1, 100], never rejected.
-    // `GET /screener?limit=500` returns 100 rows, `limit=0` behaves as 1.
+    // Historical behavior: limit is clamped to [1, 100] inside runScreener,
+    // never rejected. `GET /screener?limit=500` returns 100 rows, `limit=0`
+    // behaves as 1.
     limit: z.coerce
       .number({ error: 'limit must be a valid integer' })
       .int({ error: 'limit must be a valid integer' })
-      .default(SCREENER_DEFAULT_LIMIT)
-      .transform((v) => Math.min(SCREENER_MAX_LIMIT, Math.max(1, v))),
+      .default(SCREENER_DEFAULT_LIMIT),
     sortBy: z.string().default('volume'),
     order: z
       .preprocess(
@@ -134,46 +111,6 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'order must be asc or desc' })
       }
       const { limit, sortBy, order, cursor } = parsed.data
-      const filters = {
-        volume: parsed.data.volume,
-        change_24h_min: parsed.data.change_24h_min,
-        change_24h_max: parsed.data.change_24h_max,
-        price_min: parsed.data.price_min,
-        price_max: parsed.data.price_max,
-        liquidity: parsed.data.liquidity,
-      }
-
-      // 3. Build query parameters and WHERE conditions
-      const conditions: string[] = []
-      // Every CTE below is scoped to one network: testnet and mainnet rows share
-      // these tables, and pooling them would rank a pair on the other chain's data.
-      const params: any[] = [req.network ?? activeNetwork]
-      let paramIdx = 2
-
-      if (filters.volume !== undefined) {
-        conditions.push(`volume >= $${paramIdx++}`)
-        params.push(filters.volume)
-      }
-      if (filters.change_24h_min !== undefined) {
-        conditions.push(`change_24h >= $${paramIdx++}`)
-        params.push(filters.change_24h_min)
-      }
-      if (filters.change_24h_max !== undefined) {
-        conditions.push(`change_24h <= $${paramIdx++}`)
-        params.push(filters.change_24h_max)
-      }
-      if (filters.price_min !== undefined) {
-        conditions.push(`price >= $${paramIdx++}`)
-        params.push(filters.price_min)
-      }
-      if (filters.price_max !== undefined) {
-        conditions.push(`price <= $${paramIdx++}`)
-        params.push(filters.price_max)
-      }
-      if (filters.liquidity !== undefined) {
-        conditions.push(`liquidity >= $${paramIdx++}`)
-        params.push(filters.liquidity)
-      }
 
       // 4. Cursor decoding and pagination condition
       if (q.cursor) {
@@ -254,15 +191,25 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
 
       return {
         network: req.network ?? activeNetwork,
-        data: data.map((row) => ({
-          ...row,
-          liquidity_unit: row.pair_key.split('/')[1] ?? 'quote',
-        })),
-        nextCursor,
-        hasMore,
-        total: null,
-      }
+        filters: {
+          volume: parsed.data.volume,
+          change_24h_min: parsed.data.change_24h_min,
+          change_24h_max: parsed.data.change_24h_max,
+          price_min: parsed.data.price_min,
+          price_max: parsed.data.price_max,
+          liquidity: parsed.data.liquidity,
+        },
+        sortBy,
+        order,
+        cursor,
+        limit,
+      })
     } catch (error) {
+      // A malformed cursor is the caller's mistake and gets the same 400 body
+      // the route has always returned for it.
+      if (error instanceof ScreenerCursorError) {
+        return reply.status(400).send({ error: error.message, code: error.code })
+      }
       log.error({ err: error }, 'screener query failed')
       return reply.status(500).send({ error: 'Internal server error' })
     }
