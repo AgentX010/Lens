@@ -139,6 +139,8 @@ missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
 
+All routes are partitioned into three security and CORS tiers (`public`, `credentialed`, and `admin`) with a split CORS policy — see the [Route Classification & CORS Guide](docs/routes.md).
+
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
 `400` — and defaults to this instance's `STELLAR_NETWORK`. Only the routes whose
