@@ -4,7 +4,7 @@ import fp from 'fastify-plugin'
 import { prisma } from '../db'
 import { api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
 
-type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired'
+type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired' | 'insufficient_scope'
 
 /**
  * Metadata for an authenticated API key, attached to each request as
@@ -15,6 +15,7 @@ export interface ApiKeyContext {
   label: string
   ratePerMin: number
   ratePerDay: number
+  scopes: string[]
 }
 
 declare module 'fastify' {
@@ -28,12 +29,29 @@ declare module 'fastify' {
     admin?: boolean
     /** Semantic authentication classification. */
     auth?: 'none' | 'api-key' | 'admin'
+    /** Required scope to access this route (e.g. 'read:prices', 'read:history', 'subscribe'). */
+    scope?: string
+    /** Required scopes to access this route. */
+    scopes?: string[]
   }
 }
 
 /** SHA-256 hex digest of a plaintext API key. We only ever store/compare hashes. */
 export function hashApiKey(key: string): string {
   return createHash('sha256').update(key, 'utf8').digest('hex')
+}
+
+/**
+ * Checks whether an API key context satisfies the required scope.
+ *
+ * A key with no scopes recorded (empty or undefined) means "everything"
+ * so that existing integrations continue to work without disruption.
+ */
+export function hasScope(key: ApiKeyContext, requiredScope?: string): boolean {
+  if (!requiredScope) return true
+  // A key with no scopes recorded means "everything"
+  if (!key.scopes || key.scopes.length === 0) return true
+  return key.scopes.includes(requiredScope) || key.scopes.includes('*')
 }
 
 /** Extracts the bearer token from an Authorization header, or null. */
@@ -67,6 +85,7 @@ async function lookupApiKeyResult(
       label: record.label,
       ratePerMin: record.ratePerMin,
       ratePerDay: record.ratePerDay,
+      scopes: record.scopes ?? [],
     },
   }
 }
@@ -115,6 +134,8 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
       public?: boolean
       admin?: boolean
       auth?: 'none' | 'api-key' | 'admin'
+      scope?: string
+      scopes?: string[]
     }
     const url = req.url.split('?')[0]
     const isAdmin = routeConfig.admin || routeConfig.auth === 'admin' || url.startsWith('/admin')
@@ -167,6 +188,20 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
     }
 
     req.apiKey = keyContext
+
+    const requiredScopes = routeConfig.scopes ?? (routeConfig.scope ? [routeConfig.scope] : [])
+    for (const scope of requiredScopes) {
+      if (!hasScope(keyContext, scope)) {
+        api_key_auth_failures_total.inc({ reason: 'insufficient_scope' })
+        return reply.status(403).send({
+          error: 'Forbidden',
+          code: 'insufficient_scope',
+          message: `Missing required scope: ${scope}`,
+          requiredScope: scope,
+          scope,
+        })
+      }
+    }
   })
 }
 
