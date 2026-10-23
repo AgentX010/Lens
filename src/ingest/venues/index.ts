@@ -121,24 +121,38 @@ export const VENUE_CLASSIFICATIONS: Record<string, VenueClassificationInfo> = {
 
 /**
  * Returns the classification ('primary' | 'aggregator') for a venue by source or name.
- * Defaults to 'primary' for unknown venues to ensure primary markets are not omitted.
+ *
+ * **The adapter is the authority, not the map above.** `classification` is a
+ * required field on `VenueAdapter`, so the compiler makes a venue author state
+ * it; `VENUE_CLASSIFICATIONS` is hand-maintained prose that carries the
+ * reasoning. If the two ever disagree, the declaration a venue cannot be
+ * written without is the one to believe — and
+ * `venueAdapters.test.ts` fails the build when they do, so the disagreement is
+ * caught rather than resolved silently at runtime.
+ *
+ * Unknown venues default to 'primary'. `price_points.source` carries values
+ * with no adapter behind them (CEX feeds, for instance), and those are real
+ * independent markets. The risk this leaves is a *new aggregator* nobody
+ * registered being counted toward net volume; the drift test is what closes it,
+ * because an aggregator must have an adapter to be ingested at all.
  */
 export function getVenueClassification(sourceOrName: string): import('./types').VenueClassification {
   if (!sourceOrName) return 'primary'
+
+  const lower = sourceOrName.toLowerCase()
+  const adapter = venueAdapters.find(
+    (a) => a.source.toLowerCase() === lower || a.name.toLowerCase() === lower,
+  )
+  if (adapter) return adapter.classification
+
   const match = VENUE_CLASSIFICATIONS[sourceOrName]
   if (match) return match.classification
 
-  const lower = sourceOrName.toLowerCase()
   for (const [key, info] of Object.entries(VENUE_CLASSIFICATIONS)) {
     if (key.toLowerCase() === lower || info.name.toLowerCase() === lower || info.source.toLowerCase() === lower) {
       return info.classification
     }
   }
-
-  const adapter = venueAdapters.find(
-    (a) => a.source.toLowerCase() === lower || a.name.toLowerCase() === lower,
-  )
-  if (adapter) return adapter.classification
 
   return 'primary'
 }
