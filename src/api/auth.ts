@@ -1,8 +1,12 @@
+import { redis } from '../redis'
+import { createLogger } from '../logger'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { createHash, timingSafeEqual } from 'crypto'
 import fp from 'fastify-plugin'
 import { prisma } from '../db'
-import { api_key_auth_failures_total } from '../metrics'
+import { api_key_auth_failures_total, admin_auth_failures_total } from '../metrics'
+
+const log = createLogger('auth')
 
 type ApiKeyAuthFailureReason = 'missing' | 'malformed' | 'unknown' | 'revoked' | 'expired' | 'insufficient_scope'
 
@@ -23,8 +27,12 @@ declare module 'fastify' {
     apiKey?: ApiKeyContext
   }
   interface FastifyContextConfig {
-    /** When true, the API-key auth hook skips this route (e.g. health, admin). */
+    /** When true, this route is genuinely public and requires no authentication (e.g. health probes). */
     public?: boolean
+    /** When true, this route is an operator-only admin route guarded by ADMIN_TOKEN. */
+    admin?: boolean
+    /** Semantic authentication classification. */
+    auth?: 'none' | 'api-key' | 'admin'
     /** Required scope to access this route (e.g. 'read:prices', 'read:history', 'subscribe'). */
     scope?: string
     /** Required scopes to access this route. */
@@ -138,6 +146,71 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
 
 
 /**
+ * Seconds remaining until UTC midnight.
+ * Used for both Redis TTL and the HTTP Retry-After response header.
+ */
+export function getSecondsUntilUtcMidnight(now = new Date()): number {
+  const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  return Math.max(1, Math.floor((tomorrow.getTime() - now.getTime()) / 1000))
+}
+
+// In-memory fallback daily request tracker (keyed by apiKeyId), used if Redis is unreachable or in tests
+const inMemoryDailyUsage = new Map<string, { count: number; date: string }>()
+
+/**
+ * Checks and increments the daily request count for an authenticated API key.
+ *
+ * Uses Redis (ratelimit:day:{apiKeyId}:{YYYY-MM-DD}) with an expiration set to
+ * the remaining seconds until UTC midnight.
+ *
+ * On Redis being unreachable, allow the request and log it — do not fail closed.
+ * Unlike x402 metering which guards an actual payment and must fail closed,
+ * a rate limiter failing closed would turn a cache/Redis outage into a total API
+ * outage for every authenticated caller, which is a far worse trade.
+ */
+export async function checkAndIncrementDailyUsage(
+  apiKeyId: string,
+  ratePerDay: number,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const redisKey = `ratelimit:day:${apiKeyId}:${today}`
+
+  try {
+    if (redis && redis.status === 'ready') {
+      const count = await redis.incr(redisKey)
+      if (count === 1) {
+        const ttl = getSecondsUntilUtcMidnight(now)
+        await redis.expire(redisKey, ttl)
+      }
+      if (count > ratePerDay) {
+        return { allowed: false, remaining: 0 }
+      }
+      return { allowed: true, remaining: Math.max(0, ratePerDay - count) }
+    }
+  } catch (err) {
+    // Fail-open: allow request and log warning
+    log.warn({ err, apiKeyId }, 'redis rate limiter unreachable; failing open')
+  }
+
+  // In-memory fallback when Redis is offline or during testing
+  const entry = inMemoryDailyUsage.get(apiKeyId)
+  if (!entry || entry.date !== today) {
+    inMemoryDailyUsage.set(apiKeyId, { count: 1, date: today })
+    return { allowed: true, remaining: Math.max(0, ratePerDay - 1) }
+  }
+  if (entry.count >= ratePerDay) {
+    return { allowed: false, remaining: 0 }
+  }
+  entry.count++
+  return { allowed: true, remaining: Math.max(0, ratePerDay - entry.count) }
+}
+
+export function resetDailyUsage(): void {
+  inMemoryDailyUsage.clear()
+}
+
+/**
  * Fastify plugin that authenticates requests via `Authorization: Bearer <key>`.
  *
  * A request without a valid, non-revoked, unexpired key gets 401. Valid requests have
@@ -151,17 +224,50 @@ export function isAdminAuthorized(req: FastifyRequest): boolean {
  * Routes can opt out of auth (e.g. health/metrics) by setting
  * `config.public = true` on the route definition.
  */
+/** Route config fields the two auth hooks read. */
+type AuthRouteConfig = {
+  public?: boolean
+  admin?: boolean
+  auth?: 'none' | 'api-key' | 'admin'
+}
+
+/**
+ * Whether a request is bound for an operator-only admin route.
+ *
+ * Decided from the *matched route*, never from `req.url`. The raw URL is the
+ * client's spelling of the path: find-my-way percent-decodes before matching, so
+ * `GET /%61dmin/keys` reaches the `/admin/keys` handler while
+ * `req.url.startsWith('/admin')` is false — a structural guard keyed on the raw
+ * string would wave that request straight through. `routeOptions.url` is the
+ * pattern the route was registered with (`/admin/keys/:id`), so it cannot be
+ * spelled around. It is undefined when nothing matched, which needs no guard:
+ * the request is a 404 either way.
+ *
+ * The prefix is `/admin/` with the separator, plus `/admin` exactly, so a future
+ * `/administrators` route is not silently swept into the admin tier.
+ */
+export function isAdminRoute(req: FastifyRequest): boolean {
+  const config = (req.routeOptions?.config ?? {}) as AuthRouteConfig
+  if (config.admin === true || config.auth === 'admin') return true
+
+  const pattern = req.routeOptions?.url
+  if (!pattern) return false
+  return pattern === '/admin' || pattern.startsWith('/admin/')
+}
+
 async function apiKeyAuthPlugin(app: FastifyInstance) {
   app.decorateRequest('apiKey', undefined)
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Allow routes to mark themselves public (no auth required).
-    const routeConfig = (req.routeOptions?.config ?? {}) as {
-      public?: boolean
+    const routeConfig = (req.routeOptions?.config ?? {}) as AuthRouteConfig & {
       scope?: string
       scopes?: string[]
     }
-    if (routeConfig.public) return
+    // Admin routes carry an operator token, not an API key, and are enforced by
+    // the admin hook below — so this hook steps aside rather than demanding a
+    // key it was never going to be given.
+    const isPublic = routeConfig.public === true || routeConfig.auth === 'none'
+    if (isPublic || isAdminRoute(req)) return
 
     const authorization = req.headers['authorization']
     const token = extractBearer(authorization)
@@ -223,7 +329,70 @@ async function apiKeyAuthPlugin(app: FastifyInstance) {
         })
       }
     }
+
+    // The per-minute limiter cannot express a daily cap, so this runs alongside it
+    if (keyContext.ratePerDay && keyContext.ratePerDay > 0) {
+      const { allowed, remaining } = await checkAndIncrementDailyUsage(keyContext.id, keyContext.ratePerDay)
+      const retryAfterSec = getSecondsUntilUtcMidnight()
+      reply.header('X-RateLimit-Limit-Day', keyContext.ratePerDay)
+      reply.header('X-RateLimit-Remaining-Day', remaining)
+      if (!allowed) {
+        reply.header('Retry-After', retryAfterSec)
+        return reply.status(429).send({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: `Daily rate limit of ${keyContext.ratePerDay} requests exceeded for this API key. Quota resets at UTC midnight.`,
+          retryAfter: retryAfterSec,
+        })
+      }
+    }
   })
 }
 
 export const registerApiKeyAuth = fp(apiKeyAuthPlugin, { name: 'api-key-auth' })
+
+/**
+ * Fastify plugin that structurally guards every operator-only admin endpoint.
+ *
+ * Runs as an onRequest hook over everything {@link isAdminRoute} recognises: a
+ * route declaring `admin: true` or `auth: 'admin'`, and anything registered
+ * under `/admin/`. So a new admin endpoint is protected by the fact of where it
+ * lives, not by whoever writes it remembering to call `isAdminAuthorized`.
+ *
+ * Register it before the admin routes themselves. Fastify resolves a route's
+ * hook chain when the route is registered, so a hook added afterwards does not
+ * apply to it — `src/__tests__/adminStructuralAuth.test.ts` holds that ordering
+ * by asserting on routes registered through `buildApp`'s own sequence.
+ */
+async function adminAuthHookPlugin(app: FastifyInstance) {
+  app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminRoute(req)) return
+
+    // Three outcomes, not two (#508). The hook runs before the handler, so it
+    // has to make the same distinction the handlers make, or a deployment with
+    // no ADMIN_TOKEN answers 401 "provide a valid token" to an operator who
+    // supplied a perfectly good one — and the 503 the handlers would have
+    // returned is unreachable.
+    const auth = checkAdminAuth(req)
+    if (auth === 'not_configured') {
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        code: 'admin_not_configured',
+        message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+      })
+    }
+    if (auth !== 'authorized') {
+      // Only a real rejection is a failure. An unconfigured surface is a
+      // deployment fact, and counting it here would turn one misconfigured
+      // environment into a permanent stream of auth-failure alerts.
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide a valid X-Admin-Token header.',
+      })
+    }
+  })
+}
+
+export const registerAdminAuth = fp(adminAuthHookPlugin, { name: 'admin-auth-hook' })

@@ -7,7 +7,7 @@ import { checkAdminAuth } from './auth'
 export async function registerUsageRoutes(app: FastifyInstance) {
   app.get<{ Params: { keyId: string } }>(
     '/admin/usage/:keyId',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       const auth = checkAdminAuth(req)
       if (auth === 'not_configured') {
@@ -33,7 +33,7 @@ export async function registerUsageRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/usage',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       const auth = checkAdminAuth(req)
       if (auth === 'not_configured') {
