@@ -24,14 +24,16 @@ worker, ingester or scheduler process:
 | Snapshot ingester | Appends one `price_snapshots` row per active pair at every minute boundary, per network | `src/ingesters/snapshot.ts` |
 | BullMQ workers | `aggregate-refresh` (one queue/worker per network), `snapshot-retention` (hourly), `price_points` partition maintenance (hourly) — **in the same process** | `src/jobs/aggregateRefresh.ts`, `src/jobs/snapshotRetention.ts`, `src/jobs/pricePointsPartitionJob.ts` |
 | Webhook dispatcher | Threshold alerts, delivered inline after each ingested price write | `src/webhookDispatcher.ts`, `src/alerts/delivery.ts` |
-| Schema auto-migration | `prisma db push --accept-data-loss` runs **at every boot, before the API listens** | `execSync(...)` in `main()` (`src/index.ts`) |
+| Schema migration | `prisma migrate deploy` runs **at every boot, before the API listens** — committed migrations only, never a diff of the live schema (#233). On a database that predates the migration history the baseline is recorded as applied first, without running it | `applyMigrations()` in `src/db/migrate.ts`, called from `main()` (`src/index.ts`) — doc: [`docs/database-migrations.md`](database-migrations.md) |
 | Middleware | Network selector, API-key auth, per-key/IP rate limits, the per-instance global request ceiling (`GLOBAL_RATE_LIMIT_MAX`, sheds with 503), x402 payment gate, cache policy, HTTP metrics | `src/app.ts` registration order |
 | Health probes | `GET /live` (liveness) and `GET /ready` (readiness: boot state + Postgres/Redis), plus `GET /snapshot`, a cached whole-network freshness object | `src/health.ts`, `src/routes/health.ts`, `src/routes/snapshot.ts` — doc: [`docs/health.md`](health.md) |
 | Metrics | Prometheus registry exposed on `GET /metrics` | `src/metrics.ts`, route in `src/app.ts` |
 
 **Startup order and failure behaviour** (all in `main()`, `src/index.ts`):
 
-1. `prisma db push --accept-data-loss` — failure throws → `fatal startup error`, exit 1.
+1. `applyMigrations()` — `prisma migrate deploy`, preceded by a one-time
+   `migrate resolve --applied <baseline>` when the schema exists without a
+   `_prisma_migrations` table. Failure throws → `fatal startup error`, exit 1.
 2. `redis.connect()` — **soft**: on failure logs `redis unavailable, continuing without cache` and continues.
 3. `pgPool.connect()` — **hard**: rejection → `fatal startup error`, exit 1.
 4. Load persisted pairs (`loadPersistedPairs()`).
@@ -323,15 +325,26 @@ tracking issues for the batch this runbook was filed in.
 - **Self-hosted / local**: `docker compose up -d --build` (image built by the
   multi-stage `Dockerfile`, `CMD npm start`).
 - In both cases the boot sequence in §1 applies — **including the automatic
-  `prisma db push --accept-data-loss`**.
+  `prisma migrate deploy`**.
 
 ### What a deploy interrupts
 
-1. **The schema may change destructively, automatically.** Step 1 of boot runs
-   `prisma db push --accept-data-loss` (`src/index.ts`) before the API listens:
-   any schema drift is applied on start, and the flag means a change that drops
-   a column/table is applied **without prompting**. This is the one
-   irreversible part of any deploy.2. **The API is down until `listen` returns, and not *ready* until boot ends.**
+1. **The schema changes to whatever the committed migrations say.** Step 1 of
+   boot runs `prisma migrate deploy` (`src/db/migrate.ts`) before the API
+   listens. Unlike the `db push` it replaced, it applies only migrations that
+   are in `prisma/migrations` and that a reviewer read — so a destructive change
+   reaches production because someone merged the SQL, not because a diff decided
+   it. It is still the one irreversible part of any deploy: read the pending
+   migrations before deploying, and take the backup path (rollback step 3) first
+   if any of them drops a column or a table.
+
+   The corollary of dropping `db push` is that drift is no longer self-healing.
+   A column present in `schema.prisma` but missing from the live database is
+   **not** added at boot any more — `migrate deploy` has nothing pending to
+   apply, and `assertSchemaValid()` only covers the five core tables in
+   `EXPECTED_SCHEMA`. Fix it with a committed migration; see the one-time check
+   in [`docs/database-migrations.md`](database-migrations.md).
+2. **The API is down until `listen` returns, and not *ready* until boot ends.**
    Single instance ⇒ no rolling deploy; compose allows 20 s (`start_period`)
    before healthchecks fail. `GET /ready` stays 503 from process start until
    `markBootComplete()` — gate rollouts on `/ready`; `/live` alone only proves
@@ -357,12 +370,15 @@ tracking issues for the batch this runbook was filed in.
 1. **App code:** redeploy the previous known-good revision —
    Render: roll back to the previous deploy in the dashboard;
    self-hosted: `git checkout <good-sha> && docker compose up -d --build`.
-2. **Schema:** `prisma db push` is forward-only; rolling back the code does not
-   roll back the schema. If the previous revision needs the old schema, run
-   `npx prisma db push` **from the old checkout** against the database to
-   converge it back. ⚠️ Like the boot-time push, it will accept data loss for
-   whatever the diff drops — **take the backup path (step 3) first** if the
-   diff in question removes data.
+2. **Schema:** migrations are forward-only — Prisma generates no down-migration
+   — so rolling back the code does not roll back the schema. Roll *forward*:
+   commit a migration that reverses the change and deploy it
+   (`npm run db:deploy`). Do **not** reach for `prisma db push` from the old
+   checkout: it is gone from `package.json` for a reason, and a push against a
+   database that now has migration history leaves the two disagreeing. If the
+   previous revision cannot run against the new schema, the honest options are a
+   reversing migration or a restore from the dump — **take the backup path
+   (step 3) first** if either direction removes data.
 3. **Data (if a bad deploy or its auto-migration destroyed rows):** restore the
    nightly dump per [`docs/backup-restore.md`](backup-restore.md) — dumps are
    produced daily at 03:00 UTC by `.github/workflows/db-backup.yml`,
