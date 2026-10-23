@@ -7,7 +7,7 @@ import { isAdminAuthorized } from './auth'
 export async function registerUsageRoutes(app: FastifyInstance) {
   app.get<{ Params: { keyId: string } }>(
     '/admin/usage/:keyId',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
@@ -25,7 +25,7 @@ export async function registerUsageRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/usage',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
       if (!isAdminAuthorized(req)) {
         admin_auth_failures_total.inc()
