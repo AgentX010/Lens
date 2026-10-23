@@ -2,6 +2,9 @@ import { prisma } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { deliverJsonWithRetries } from './delivery'
 import { priceEmitter } from '../events'
+import { createLogger } from '../logger'
+
+const log = createLogger('dispersion')
 
 export const DISPERSION_ALERT_EVENT = 'dispersion:alert'
 
@@ -111,7 +114,7 @@ export async function dispatchDispersionAlert(
   try {
     priceEmitter.emit(DISPERSION_ALERT_EVENT, payload)
   } catch (err) {
-    console.error('[dispersion] failed to emit alert on priceEmitter:', (err as Error).message)
+    log.error({ err }, 'failed to emit dispersion alert on priceEmitter')
   }
 
   // Find webhooks registered for this network and pair

@@ -16,6 +16,9 @@ import {
   clearAlertState,
   type VenueDispersionAlertPayload,
 } from '../alerts/dispersion'
+import { createLogger } from '../logger'
+
+const log = createLogger('reconciliation')
 
 export interface ReconcileOptions {
   freshnessWindowSeconds?: number
@@ -100,14 +103,21 @@ export async function reconcilePair(
         options.onAlert?.(alertPayload)
         alerted = true
 
-        console.warn(
-          `[reconciliation] ALERT ${network}/${pairKey}: dispersion ${result.dispersionPct.toFixed(2)}% ` +
-          `exceeds threshold ${threshold.toFixed(2)}% (outlier: ${result.outlierVenue} at +${result.outlierDeviationPct?.toFixed(2)}%)`
+        log.warn(
+          {
+            network,
+            pairKey,
+            dispersionPct: result.dispersionPct,
+            thresholdPct: threshold,
+            outlierVenue: result.outlierVenue,
+            outlierDeviationPct: result.outlierDeviationPct,
+          },
+          'cross-venue dispersion exceeds threshold'
         )
       } else {
-        console.log(
-          `[reconciliation] ${network}/${pairKey} dispersion ${result.dispersionPct.toFixed(2)}% ` +
-          `exceeds threshold ${threshold.toFixed(2)}% but alert is suppressed (cooldown active)`
+        log.info(
+          { network, pairKey, dispersionPct: result.dispersionPct, thresholdPct: threshold },
+          'cross-venue dispersion exceeds threshold; alert suppressed (cooldown active)'
         )
       }
     } else {
@@ -134,10 +144,7 @@ export async function reconcileAllPairs(
       const outcome = await reconcilePair(pair.pairKey, network, options)
       results.push({ pairKey: pair.pairKey, ...outcome })
     } catch (err) {
-      console.error(
-        `[reconciliation] Failed for ${network}/${pair.pairKey}:`,
-        (err as Error).message
-      )
+      log.error({ err, network, pairKey: pair.pairKey }, 'venue reconciliation failed for pair')
     }
   }
 
@@ -155,14 +162,14 @@ export function startVenueReconciliationWorker(network: NetworkName) {
       try {
         await reconcileAllPairs(network)
       } catch (err) {
-        console.error(`[reconciliation] Worker cycle failed on ${network}:`, (err as Error).message)
+        log.error({ err, network }, 'venue reconciliation worker cycle failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
   )
 
   worker.on('failed', (job, err) => {
-    console.error(`[reconciliation] Job failed:`, err.message)
+    log.error({ err, network, jobId: job?.id }, 'venue reconciliation job failed')
   })
 
   return worker

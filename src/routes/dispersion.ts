@@ -62,7 +62,7 @@ export async function registerDispersionRoutes(app: FastifyInstance) {
         history,
       }
     } catch (err) {
-      console.error('[dispersion] Query failed:', (err as Error).message)
+      req.log.error({ err }, 'dispersion query failed')
       return reply.status(500).send({ error: 'Dispersion query failed' })
     }
   })
@@ -115,7 +115,7 @@ export async function registerDispersionRoutes(app: FastifyInstance) {
         history,
       }
     } catch (err) {
-      console.error('[dispersion] Query failed:', (err as Error).message)
+      req.log.error({ err }, 'dispersion query failed')
       return reply.status(500).send({ error: 'Dispersion query failed' })
     }
   })
