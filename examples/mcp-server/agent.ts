@@ -137,8 +137,10 @@ async function main() {
     } else {
       console.log('[agent] Search result:', searchResult.content[0].text);
       const data = JSON.parse(searchResult.content[0].text);
-      if (data.resources && data.resources.length > 0) {
+      if (Array.isArray(data.resources) && data.resources.length > 0) {
         paidEndpoint = data.resources[0].url;
+      } else if (data.count === 0) {
+        console.log('[agent] Search completed with no matching resources.');
       }
     }
   } catch (err: any) {
