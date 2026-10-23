@@ -1,14 +1,17 @@
 import 'dotenv/config'
-import { execSync } from 'child_process'
+import Fastify from 'fastify'
 
 if (!process.env.DIRECT_DATABASE_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_DATABASE_URL = process.env.DATABASE_URL
 }
-import { config, type NetworkName } from './config'
+import { installProcessErrorHandlers } from './processErrorHandlers'
+import { config, getNetworkConfig, type NetworkName } from './config'
 import { getEnabledNetworks } from './network/enabledNetworks'
 import { createLogger } from './logger'
 import { redis } from './redis'
 import { pgPool } from './db'
+import { assertSchemaValid } from './db/schemaVerify'
+import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
@@ -26,13 +29,29 @@ import {
 import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
 import { markHealthy, recordCrash } from './ingester/restart'
 import { markBootComplete } from './health'
+import { startSep40Publisher } from './publish/publisher'
 
 const log = createLogger('startup')
 
+// The house logger, not a throwaway Fastify instance built only to borrow one:
+// buildLogger pipes every line through redactSecrets, and a fatal handler that
+// prints an unredacted error is the one place that matters most — a crash log
+// is exactly where a connection string or an API key tends to surface.
+installProcessErrorHandlers(log)
+
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
-  log.info('running database migrations')
-  execSync('node node_modules/prisma/build/index.js db push --accept-data-loss', { stdio: 'inherit' })
+  // #233: apply committed, reviewable migrations — never `db push`. `migrate
+  // deploy` only runs migrations already in prisma/migrations and fails loudly
+  // if the DB is ahead of them, instead of silently diffing the live schema and
+  // applying whatever it decides. See docs/database-migrations.md.
+  //
+  // Every database Lens has today was made by `db push`, so it carries the
+  // schema with no migration history and `migrate deploy` alone would collide
+  // with its own baseline — a crash loop, since this function exits(1). The
+  // one-time adoption is in applyMigrations(); see src/db/migrate.ts.
+  log.info('applying committed database migrations')
+  await applyMigrations({ db: pgPool, warn: (context, message) => log.warn(context, message) })
   log.info('database ready')
 
   // ── Connect dependencies ──────────────────────────────────────────────────
@@ -53,6 +72,10 @@ async function main() {
 
   await pgPool.connect()
   log.info('postgresql connected')
+
+  // Verify database schema matches expected tables and columns (#352)
+  await assertSchemaValid()
+  log.info('database schema verified')
 
   // ── Load persisted runtime pairs ──────────────────────────────────────────
   await loadPersistedPairs()
@@ -237,6 +260,17 @@ async function main() {
       restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
     }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))
+
+    // The publisher is the one loop in this process that writes to a chain, so
+    // it is started on its own per-network switch rather than alongside the
+    // readers: an operator who has deployed a feed but has not put a key in the
+    // environment gets an explicit "not started", not a crash loop. Same fault
+    // isolation as every ingester above.
+    if (getNetworkConfig(network).publisher.enabled) {
+      restartIngester('SEP-40 Publisher', network, () => startSep40Publisher(network))
+    } else {
+      log.info({ network }, 'SEP-40 publication disabled; publisher not started')
+    }
   }
 
   log.info(
