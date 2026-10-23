@@ -1,8 +1,14 @@
 # Database Schema & Migration Strategy
 
-## Current State: `prisma db push`
+## Current state: `prisma migrate`
 
-`prisma/` currently contains `schema.prisma` without a `migrations/` directory. Lens currently leverages `prisma db push` for schema updates.
+> **Superseded (#233).** `prisma/` now contains a `migrations/` directory with a
+> committed baseline, CI fails on drift between `schema.prisma` and the
+> migrations, and both startup and deploys run `prisma migrate deploy`.
+> `prisma db push` is no longer a `package.json` script and must not be run
+> against any environment. See
+> [`docs/database-migrations.md`](database-migrations.md). The rest of this
+> section records why `db push` was used during early development.
 
 ### Architectural Rationale
 

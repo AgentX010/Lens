@@ -128,8 +128,9 @@ export async function queryHistory(
 /**
  * GET /prices/history?pair=XLM/USDC&from=…&to=…&interval=1m|5m|1h
  *
- * Returns historical price snapshots for a pair over [from, to], optionally
- * aggregated into 5m or 1h buckets. Defaults to the last 24h at 1m resolution.
+ * Returns historical price snapshots for a pair over the half-open window
+ * [from, to) — `from` inclusive, `to` exclusive — optionally aggregated into 5m
+ * or 1h buckets. Defaults to the last 24h at 1m resolution.
  *
  * The network is resolved by the network selector (`?network=` / `x-network`,
  * defaulting to this deployment's active network) and echoed in the response.
