@@ -2,6 +2,9 @@ import { Queue, Worker } from 'bullmq'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { getEnabledNetworks } from '../network/enabledNetworks'
+import { createLogger } from '../logger'
+
+const log = createLogger('job:rate-retention')
 
 const QUEUE_NAME = `${activeNetwork}:rate-retention`
 
@@ -65,7 +68,7 @@ export async function pruneOldRates(
 
     totalPruned += pruned
     batchNumber += 1
-    console.log(`[rate-retention] ${network}: pruned batch ${batchNumber} (${pruned} rows; ${totalPruned} total)`)
+    log.info({ network, batch: batchNumber, batchRows: pruned, totalPruned }, 'pruned lending rate batch')
     onProgress?.({ network, batch: batchNumber, batchRows: pruned, totalPruned })
 
     // Give other jobs and requests a chance to run between database batches.
@@ -104,17 +107,17 @@ export function startRateRetentionWorker() {
       try {
         const counts = await pruneAllRateNetworks()
         for (const [network, pruned] of Object.entries(counts)) {
-          if (pruned > 0) console.log(`[rate-retention] pruned ${pruned} ${network} rate(s) older than ${RATE_RETENTION_DAYS}d`)
+          if (pruned > 0) log.info({ network, pruned, retentionDays: RATE_RETENTION_DAYS }, 'pruned old lending rates')
         }
       } catch (err) {
-        console.error('[rate-retention] prune failed:', (err as Error).message)
+        log.error({ err }, 'lending rate prune failed')
       }
     },
     { connection: redisConnection(), concurrency: 1 }
   )
 
   worker.on('failed', (_job, err) => {
-    console.error('[rate-retention] Job failed:', err.message)
+    log.error({ err }, 'lending rate retention job failed')
   })
 
   return worker

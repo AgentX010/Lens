@@ -67,26 +67,21 @@ describe('pruneOldRates', () => {
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 2 })
       .mockResolvedValueOnce({ rowCount: 0 })
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     const onProgress = vi.fn()
 
-    try {
-      const total = await pruneOldRates(30, 'mainnet', 4, onProgress)
-      expect(total).toBe(6)
-      expect(mockQuery.mock.calls.map(call => call[1])).toEqual([
-        ['mainnet', 30, 4],
-        ['mainnet', 30, 4],
-        ['mainnet', 30, 4],
-      ])
-      expect(onProgress).toHaveBeenLastCalledWith({
-        network: 'mainnet',
-        batch: 2,
-        batchRows: 2,
-        totalPruned: 6,
-      })
-    } finally {
-      log.mockRestore()
-    }
+    const total = await pruneOldRates(30, 'mainnet', 4, onProgress)
+    expect(total).toBe(6)
+    expect(mockQuery.mock.calls.map(call => call[1])).toEqual([
+      ['mainnet', 30, 4],
+      ['mainnet', 30, 4],
+      ['mainnet', 30, 4],
+    ])
+    expect(onProgress).toHaveBeenLastCalledWith({
+      network: 'mainnet',
+      batch: 2,
+      batchRows: 2,
+      totalPruned: 6,
+    })
   })
 
   it('rejects an invalid batchSize with a RangeError', async () => {

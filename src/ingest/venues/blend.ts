@@ -27,6 +27,9 @@ import { blend_pool_errors_total, blend_rates_ingested_total } from '../../metri
 import type { WatchedPair } from '../../types'
 import type { VenueAdapter, VenuePricePoint } from './types'
 import { getLastPrice, resetLastPrice, sleep } from './runner'
+import { createLogger } from '../../logger'
+
+const log = createLogger('ingester:blend')
 
 // ── Ephemeral Fee Payer for Soroban Simulations ───────────────────────────────
 const FEE_PAYER_KEYPAIR = Keypair.random()
@@ -472,7 +475,7 @@ export async function ingestBlendPool(
   try {
     const pool = await fetchPool(poolId, network)
     if (!pool || pool.reserves.length === 0) {
-      console.warn(`[blend] Skipping pool ${poolId} on ${network}: no reserves found or pool could not be read`)
+      log.warn({ pool: poolId, network }, 'skipping Blend pool: no reserves found or pool could not be read')
       blend_pool_errors_total.inc({ pool: poolId, network })
       return []
     }
@@ -507,7 +510,7 @@ export async function ingestBlendPool(
 
     return rates
   } catch (err) {
-    console.error(`[blend] Failed to ingest pool ${poolId} on ${network}:`, (err as Error).message)
+    log.error({ err, pool: poolId, network }, 'failed to ingest Blend pool')
     blend_pool_errors_total.inc({ pool: poolId, network })
     return []
   }
@@ -531,7 +534,7 @@ export async function ingestBlendPools(
       const rates = await ingestPool(poolId, network)
       totalIngested += rates.length
     } catch (err) {
-      console.error(`[blend] Failed to ingest pool ${poolId} on ${network}:`, (err as Error).message)
+      log.error({ err, pool: poolId, network }, 'failed to ingest Blend pool')
       blend_pool_errors_total.inc({ pool: poolId, network })
     }
   }
@@ -552,6 +555,8 @@ export async function ingestBlendPair(
 
 export const blendAdapter: VenueAdapter<BlendPoolData[], BlendReserveEntry[]> = {
   name: 'Blend',
+  type: 'Lending Pool',
+  description: 'Blend lending pools on Soroban, supply and borrow rates',
   source: 'blend',
 
   isEnabled(network: NetworkName): boolean {
@@ -604,11 +609,11 @@ export async function startBlendIngester(
 ): Promise<void> {
   const netConfig = getNetworkConfig(network)
   if (!netConfig.blend.enabled) {
-    console.log(`[blend] Blend is disabled on ${network} — ingester not started`)
+    log.info({ network }, 'Blend disabled; ingester not started')
     return
   }
 
-  console.log(`[blend] Starting Blend lending rate ingester on ${network} (pools: ${netConfig.blend.pools.length})`)
+  log.info({ network, pools: netConfig.blend.pools.length }, 'starting Blend lending rate ingester')
 
   let consecutiveErrors = 0
   while (true) {
@@ -618,9 +623,9 @@ export async function startBlendIngester(
     } catch (err) {
       consecutiveErrors++
       const backoffMs = Math.min(10_000 * Math.pow(2, consecutiveErrors - 1), 60_000)
-      console.error(
-        `[blend] Ingestion cycle failed on ${network} (attempt ${consecutiveErrors}), retrying in ${backoffMs}ms:`,
-        (err as Error).message
+      log.error(
+        { err, network, attempt: consecutiveErrors, backoffMs },
+        'Blend ingestion cycle failed; retrying'
       )
       await sleep(backoffMs)
       continue

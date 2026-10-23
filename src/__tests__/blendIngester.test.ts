@@ -10,6 +10,15 @@ import {
 import * as dbModule from '../db'
 import { blend_pool_errors_total, blend_rates_ingested_total } from '../metrics'
 
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}))
+
+vi.mock('../logger', () => ({
+  createLogger: () => mockLogger,
+  logger: mockLogger,
+}))
+
 vi.mock('../db', () => ({
   insertLendingRates: vi.fn().mockResolvedValue(1),
   getLatestLendingRates: vi.fn().mockResolvedValue([]),
@@ -88,7 +97,7 @@ describe('Blend Ingester & Fault Isolation', () => {
   it('skips a pool that returns null/empty with a metric and log, never crashing', async () => {
     const mockFetch = vi.fn().mockResolvedValue(null)
     const errMetricSpy = vi.spyOn(blend_pool_errors_total, 'inc')
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warnSpy = mockLogger.warn
 
     // Must not throw
     const rates = await ingestBlendPool(mockPoolId, 'testnet', mockFetch)
@@ -102,7 +111,7 @@ describe('Blend Ingester & Fault Isolation', () => {
   it('skips a pool that throws an RPC network error with a metric and log, never crashing', async () => {
     const mockFetch = vi.fn().mockRejectedValue(new Error('RPC request timed out'))
     const errMetricSpy = vi.spyOn(blend_pool_errors_total, 'inc')
-    const errLogSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const errLogSpy = mockLogger.error
 
     // Must not throw or crash
     const rates = await ingestBlendPool(mockPoolId, 'mainnet', mockFetch)
@@ -111,8 +120,8 @@ describe('Blend Ingester & Fault Isolation', () => {
     expect(dbModule.insertLendingRates).not.toHaveBeenCalled()
     expect(errMetricSpy).toHaveBeenCalledWith({ pool: mockPoolId, network: 'mainnet' })
     expect(errLogSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[blend] Failed to ingest pool'),
-      'RPC request timed out'
+      expect.objectContaining({ pool: mockPoolId, network: 'mainnet', err: expect.objectContaining({ message: 'RPC request timed out' }) }),
+      'failed to ingest Blend pool'
     )
   })
 

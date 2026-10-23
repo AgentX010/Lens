@@ -5,6 +5,7 @@ const mockRates = [
   {
     id: 'rate-1',
     network: 'mainnet',
+    venue: 'blend',
     source: 'blend',
     pool_id: 'CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD',
     asset: 'USDC',
@@ -28,20 +29,21 @@ const { mockGetLatestLendingRates } = vi.hoisted(() => ({
 
 vi.mock('../db', () => ({
   getLatestLendingRates: mockGetLatestLendingRates,
+  pgPool: { query: vi.fn() },
 }))
 
-import { registerRatesRoutes } from '../routes/rates'
+import { registerRateRoutes } from '../routes/rates'
 import { registerNetworkSelector } from '../middleware/network'
 
 async function buildTestApp() {
   const app = Fastify({ logger: false })
   await app.register(registerNetworkSelector)
-  await registerRatesRoutes(app)
+  await registerRateRoutes(app)
   await app.ready()
   return app
 }
 
-describe('Rates API Routes (GET /rates & GET /rates/:asset)', () => {
+describe('Rates list route (GET /rates)', () => {
   beforeEach(() => {
     mockGetLatestLendingRates.mockReset()
     mockGetLatestLendingRates.mockResolvedValue(mockRates)
@@ -71,28 +73,6 @@ describe('Rates API Routes (GET /rates & GET /rates/:asset)', () => {
 
     expect(mockGetLatestLendingRates).toHaveBeenCalledWith('mainnet', {
       asset: undefined,
-      poolId: undefined,
-      limit: 100,
-    })
-
-    await app.close()
-  })
-
-  it('GET /rates/:asset filters for a specific asset', async () => {
-    const app = await buildTestApp()
-    const res = await app.inject({
-      method: 'GET',
-      url: '/rates/USDC?network=mainnet',
-    })
-
-    expect(res.statusCode).toBe(200)
-    const json = res.json()
-    expect(json.asset).toBe('USDC')
-    expect(json.network).toBe('mainnet')
-    expect(json.rates[0].asset).toBe('USDC')
-
-    expect(mockGetLatestLendingRates).toHaveBeenCalledWith('mainnet', {
-      asset: 'USDC',
       poolId: undefined,
       limit: 100,
     })
