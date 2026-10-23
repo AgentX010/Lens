@@ -285,8 +285,16 @@ paths:
                     type: string
                   error:
                     type: string
+                    description: >-
+                      A fixed phrase, never the database driver's message. This
+                      route is public and unauthenticated, and a connection
+                      failure carries the host, the user and sometimes the whole
+                      connection string; the detail is logged server-side
+                      instead.
+                    example: Database unavailable
                   pagingCondition:
                     type: string
+                    example: DATABASE_DOWN
         '429':
           $ref: '#/components/responses/TooManyRequests'
 

@@ -19,6 +19,7 @@ import {
 } from './schemas'
 import { getDepth, getImpact } from '../pricing/depth'
 import { listCrashes } from '../ingester/restart'
+import { isBootComplete } from '../health'
 import { resolveDecimalFormat, formatDecimal } from '../utils/decimals'
 
 function makePairKey(a: string, b: string): string {
@@ -75,6 +76,16 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // up the validating serializer.
   installResponseValidation(app)
 
+  /**
+   * How long the last ingester write may be stale before `/status` says so.
+   *
+   * Named rather than inlined because it is a published threshold: the README's
+   * Datadog/Prometheus/BetterStack examples and the `degraded` contract in
+   * `openapi.yaml` all quote it, and a monitor tuned to one number while the
+   * service uses another is worse than no monitor.
+   */
+  const INGEST_STALE_AFTER_SECONDS = 300
+
   // GET /status — public health/monitoring endpoint (no API key required) (#273)
   app.get(
     '/status',
@@ -103,11 +114,20 @@ export async function registerRESTRoutes(app: FastifyInstance) {
             LIMIT 1`,
           [network]
         )
-      } catch (err: any) {
+      } catch (err: unknown) {
+        // The driver's own message is not safe to return here. `/status` is
+        // public and unauthenticated, and a pg connection failure puts the host,
+        // the user and sometimes the whole connection string into
+        // `err.message` — this endpoint is the most-polled surface Lens has.
+        // Lens has already had to rotate a database password over exactly this
+        // shape of leak on another route, so the detail goes to the log, where
+        // buildLogger pipes it through redactSecrets, and the response says only
+        // which dependency is down.
+        req.log.error({ err }, 'status: database query failed')
         return reply.status(503).send({
           ok: false,
           status: 'unhealthy',
-          error: err?.message || 'Database query failed',
+          error: 'Database unavailable',
           pagingCondition: 'DATABASE_DOWN',
         })
       }
@@ -117,10 +137,17 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const ingestLagSeconds = lastProcessedAt
         ? Math.max(0, Math.round((Date.now() - new Date(lastProcessedAt).getTime()) / 1000))
         : null
-      const isStale = ingestLagSeconds !== null && ingestLagSeconds > 300
-      const processHealth = 'healthy' as const
+      const isStale = ingestLagSeconds !== null && ingestLagSeconds > INGEST_STALE_AFTER_SECONDS
+      // Process health has to be measured, or the split this endpoint exists to
+      // make is cosmetic. Boot is the signal that is actually available and
+      // actually distinct from data freshness: between `listen()` and
+      // `markBootComplete()` the process answers requests while its ingesters
+      // are not all running yet, which is a degraded *process*, not stale data.
+      // It is the same signal `/ready` gates on.
+      const processHealth = isBootComplete() ? ('healthy' as const) : ('degraded' as const)
       const dataHealth = isStale ? ('stale' as const) : ('healthy' as const)
-      const overallStatus = isStale ? ('degraded' as const) : ('healthy' as const)
+      const overallStatus =
+        processHealth === 'degraded' || isStale ? ('degraded' as const) : ('healthy' as const)
 
       return {
         ok: true,
@@ -133,7 +160,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         process: {
           uptimeSeconds,
           memoryUsageMb,
-          status: 'healthy',
+          status: processHealth,
         },
         data: {
           lastIndexedLedger,

@@ -1643,7 +1643,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description API status */
+            /** @description API status and health diagnostics */
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
@@ -1653,7 +1653,25 @@ export interface operations {
                     "application/json": {
                         ok?: boolean;
                         /** @enum {string} */
+                        status?: "healthy" | "degraded" | "unhealthy";
+                        /** @enum {string} */
                         network?: "testnet" | "mainnet";
+                        health?: {
+                            process?: string;
+                            data?: string;
+                        };
+                        process?: {
+                            uptimeSeconds?: number;
+                            memoryUsageMb?: number;
+                            status?: string;
+                        };
+                        data?: {
+                            lastIndexedLedger?: number | null;
+                            /** Format: date-time */
+                            lastProcessedAt?: string | null;
+                            ingestLagSeconds?: number | null;
+                            isStale?: boolean;
+                        };
                         watchedPairs?: string[];
                         lastIndexedLedger?: number | null;
                         /** Format: date-time */
@@ -1663,6 +1681,25 @@ export interface operations {
                 };
             };
             429: components["responses"]["TooManyRequests"];
+            /** @description Service unhealthy or database unreachable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok?: boolean;
+                        status?: string;
+                        /**
+                         * @description A fixed phrase, never the database driver's message. This route is public and unauthenticated, and a connection failure carries the host, the user and sometimes the whole connection string; the detail is logged server-side instead.
+                         * @example Database unavailable
+                         */
+                        error?: string;
+                        /** @example DATABASE_DOWN */
+                        pagingCondition?: string;
+                    };
+                };
+            };
         };
     };
     getSnapshot: {

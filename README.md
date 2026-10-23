@@ -544,7 +544,8 @@ curl http://localhost:3002/status
 - **Process Health vs Data Health:** The HTTP status code distinguishes service availability from data staleness.
   - `HTTP 200 OK` (`status: "healthy"`): Both process runtime and data feeds are functioning normally.
   - `HTTP 200 OK` (`status: "degraded"`, `health.data: "stale"`): The API server is healthy and responding, but ingestion lag exceeds 300 seconds. **Do not page engineers for intermittent upstream ledger delays.**
-  - `HTTP 503 Service Unavailable` (`pagingCondition: "DATABASE_DOWN"`): Critical infrastructure failure (e.g. Postgres is down or unreachable). **Uptime monitors should page on HTTP 503.**
+  - `HTTP 200 OK` (`status: "degraded"`, `health.process: "degraded"`): the port answers but boot has not finished, so not every ingester is running yet. Normal for the first seconds of a deploy — gate rollouts on `/ready`, which stays 503 until boot completes, rather than paging on this.
+  - `HTTP 503 Service Unavailable` (`pagingCondition: "DATABASE_DOWN"`): Critical infrastructure failure (e.g. Postgres is down or unreachable). **Uptime monitors should page on HTTP 503.** The body carries `error: "Database unavailable"` and nothing more — `/status` is public, so the driver's own message (which can contain the host, the user and the connection string) goes to the server log only.
 
 #### Monitoring Configuration Example (Datadog / Prometheus / BetterStack)
 Configure your synthetic monitor / HTTP probe:

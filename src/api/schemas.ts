@@ -137,9 +137,18 @@ export const statusResponseSchema = {
   },
 } as const
 
+/**
+ * GET /status, 503 (#273).
+ *
+ * `error` is a fixed, non-revealing phrase, never the driver's message: this
+ * route is public and unauthenticated, and a pg failure carries the host, the
+ * user and sometimes the connection string. `additionalProperties: false` is
+ * what keeps a future hand from adding a `detail` field here.
+ */
 export const statusErrorResponseSchema = {
   type: 'object',
   required: ['ok', 'status', 'error', 'pagingCondition'],
+  additionalProperties: false,
   properties: {
     ok: { type: 'boolean', const: false },
     status: { type: 'string', const: 'unhealthy' },
