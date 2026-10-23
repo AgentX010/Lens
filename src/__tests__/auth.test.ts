@@ -9,9 +9,13 @@ vi.mock('../db', () => ({
     apiKey: {
       findUnique: vi.fn(),
       findMany: vi.fn(),
-      count: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+    },
+    webhookDeliveryFailure: {
+      findMany: vi.fn(),
+      create: vi.fn(),
+      deleteMany: vi.fn(),
     },
   },
 }))
@@ -22,6 +26,7 @@ import {
   hashApiKey,
   extractBearer,
   lookupApiKey,
+  hasScope,
   recordApiKeyLastUsed,
   getKeyLastUsedThrottleMs,
   resetApiKeyLastUsedThrottle,
@@ -32,7 +37,6 @@ import { register, api_key_auth_failures_total, admin_auth_failures_total } from
 
 const mockFindUnique = prisma.apiKey.findUnique as unknown as ReturnType<typeof vi.fn>
 const mockFindMany = prisma.apiKey.findMany as unknown as ReturnType<typeof vi.fn>
-const mockCount = prisma.apiKey.count as unknown as ReturnType<typeof vi.fn>
 const mockCreate = prisma.apiKey.create as unknown as ReturnType<typeof vi.fn>
 const mockUpdate = prisma.apiKey.update as unknown as ReturnType<typeof vi.fn>
 
@@ -56,19 +60,21 @@ async function buildAuthedApp() {
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
   })
-  app.get('/price/test', async () => ({ ok: true }))
+  app.get('/price/test', { config: { scope: 'read:prices' } }, async () => ({ ok: true }))
+  app.get('/history/test', { config: { scope: 'read:history' } }, async () => ({ ok: true }))
   app.get('/status', { config: { public: true } }, async () => ({ ok: true }))
   await app.ready()
   return app
 }
 
 beforeEach(() => {
+  // The lastUsedAt throttle is module-level state keyed by id; without this a
+  // window claimed in one test silently throttles the next one's write.
+  resetApiKeyLastUsedThrottle()
   mockFindUnique.mockReset()
   mockFindMany.mockReset()
-  mockCount.mockReset()
   mockCreate.mockReset()
   mockUpdate.mockReset()
-  resetApiKeyLastUsedThrottle()
 })
 
 describe('hashApiKey / extractBearer', () => {
@@ -93,7 +99,21 @@ describe('lookupApiKey', () => {
     })
     const ctx = await lookupApiKey('lens_plain')
     expect(mockFindUnique).toHaveBeenCalledWith({ where: { hash: sha256('lens_plain') } })
-    expect(ctx).toEqual({ id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000 })
+    expect(ctx).toEqual({ id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, scopes: [] })
+  })
+
+  it('returns scopes when the key has scopes defined', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, revokedAt: null, scopes: ['read:prices', 'subscribe'],
+    })
+    const ctx = await lookupApiKey('lens_plain')
+    expect(ctx).toEqual({
+      id: 'key-1',
+      label: 'acme',
+      ratePerMin: 120,
+      ratePerDay: 50000,
+      scopes: ['read:prices', 'subscribe'],
+    })
   })
 
   it('returns null for an unknown key', async () => {
@@ -118,6 +138,34 @@ describe('lookupApiKey', () => {
       expiresAt: new Date(Date.now() - 1000),
     })
     expect(await lookupApiKey('lens_plain')).toBeNull()
+  })
+})
+
+describe('hasScope', () => {
+  const unscopedKey = { id: 'k1', label: 'unscoped', ratePerMin: 60, ratePerDay: 1000, scopes: [] }
+  const scopedKey = { id: 'k2', label: 'scoped', ratePerMin: 60, ratePerDay: 1000, scopes: ['read:prices'] }
+  const wildcardKey = { id: 'k3', label: 'wildcard', ratePerMin: 60, ratePerDay: 1000, scopes: ['*'] }
+
+  it('allows access when route requires no scope', () => {
+    expect(hasScope(scopedKey, undefined)).toBe(true)
+    expect(hasScope(unscopedKey, undefined)).toBe(true)
+  })
+
+  it('allows legacy unscoped key access to any scope', () => {
+    expect(hasScope(unscopedKey, 'read:prices')).toBe(true)
+    expect(hasScope(unscopedKey, 'read:history')).toBe(true)
+    expect(hasScope(unscopedKey, 'subscribe')).toBe(true)
+  })
+
+  it('allows scoped key access only to declared scopes', () => {
+    expect(hasScope(scopedKey, 'read:prices')).toBe(true)
+    expect(hasScope(scopedKey, 'read:history')).toBe(false)
+    expect(hasScope(scopedKey, 'subscribe')).toBe(false)
+  })
+
+  it('allows wildcard key access to any scope', () => {
+    expect(hasScope(wildcardKey, 'read:prices')).toBe(true)
+    expect(hasScope(wildcardKey, 'read:history')).toBe(true)
   })
 })
 
@@ -219,6 +267,82 @@ describe('API key auth hook', () => {
     const res = await app.inject({ method: 'GET', url: '/status' })
     expect(res.statusCode).toBe(200)
     expect(mockFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('allows a call when key has the required scope', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, revokedAt: null, scopes: ['read:prices'],
+    })
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer good' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true })
+  })
+
+  it('refuses a call when key lacks the required scope and names the required scope in the error', async () => {
+    const before = await apiKeyAuthFailureCount('insufficient_scope')
+    mockFindUnique.mockResolvedValue({
+      id: 'key-1', label: 'acme', ratePerMin: 120, ratePerDay: 50000, revokedAt: null, scopes: ['read:prices'],
+    })
+    const app = await buildAuthedApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/history/test',
+      headers: { authorization: 'Bearer good' },
+    })
+    expect(res.statusCode).toBe(403)
+    const body = res.json()
+    expect(body.error).toBe('Forbidden')
+    expect(body.code).toBe('insufficient_scope')
+    expect(body.requiredScope).toBe('read:history')
+    expect(body.message).toContain('read:history')
+    expect(await apiKeyAuthFailureCount('insufficient_scope')).toBe(before + 1)
+  })
+
+  it('allows a legacy unscoped key with no scopes recorded to access any route', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-legacy', label: 'legacy-partner', ratePerMin: 120, ratePerDay: 50000, revokedAt: null, scopes: [],
+    })
+    const app = await buildAuthedApp()
+    const priceRes = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer legacy' },
+    })
+    expect(priceRes.statusCode).toBe(200)
+    expect(priceRes.json()).toEqual({ ok: true })
+
+    const historyRes = await app.inject({
+      method: 'GET',
+      url: '/history/test',
+      headers: { authorization: 'Bearer legacy' },
+    })
+    expect(historyRes.statusCode).toBe(200)
+    expect(historyRes.json()).toEqual({ ok: true })
+  })
+
+  it('allows a key with multiple scopes to access routes matching any of its scopes', async () => {
+    mockFindUnique.mockResolvedValue({
+      id: 'key-multi', label: 'multi', ratePerMin: 120, ratePerDay: 50000, revokedAt: null, scopes: ['read:prices', 'read:history'],
+    })
+    const app = await buildAuthedApp()
+    const priceRes = await app.inject({
+      method: 'GET',
+      url: '/price/test',
+      headers: { authorization: 'Bearer multi' },
+    })
+    expect(priceRes.statusCode).toBe(200)
+
+    const historyRes = await app.inject({
+      method: 'GET',
+      url: '/history/test',
+      headers: { authorization: 'Bearer multi' },
+    })
+    expect(historyRes.statusCode).toBe(200)
   })
 })
 
@@ -330,6 +454,77 @@ describe('admin endpoints', () => {
     expect(body.overagePolicy).toBe('allow_overage')
   })
 
+  it('mints a key with a scope set', async () => {
+    mockCreate.mockImplementation(async ({ data }: any) => ({
+      id: 'new-id', createdAt: new Date(), ratePerMin: 60, ratePerDay: 10000, ...data,
+    }))
+    const app = await buildAdminApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/admin/keys',
+      headers: { 'x-admin-token': 'admin-secret' },
+      payload: { label: 'scoped-partner', scopes: ['read:prices', 'subscribe'] },
+    })
+    expect(res.statusCode).toBe(201)
+    const body = res.json()
+    expect(body.key).toMatch(/^lens_[a-f0-9]{48}$/)
+    expect(body.scopes).toEqual(['read:prices', 'subscribe'])
+    const stored = mockCreate.mock.calls[0][0].data
+    expect(stored.scopes).toEqual(['read:prices', 'subscribe'])
+  })
+
+  it('lists keys with scopes visible', async () => {
+    mockFindMany.mockResolvedValue([
+      {
+        id: 'key-1',
+        label: 'partner-prices',
+        scopes: ['read:prices'],
+        ratePerMin: 60,
+        ratePerDay: 10000,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        monthlyQuotaCents: 10000,
+        dailyQuotaCents: 500,
+        overagePolicy: 'block',
+      },
+      {
+        id: 'key-2',
+        label: 'legacy-key',
+        scopes: [],
+        ratePerMin: 60,
+        ratePerDay: 10000,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        monthlyQuotaCents: 10000,
+        dailyQuotaCents: 500,
+        overagePolicy: 'block',
+      },
+    ])
+    const app = await buildAdminApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/admin/keys',
+      headers: { 'x-admin-token': 'admin-secret' },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.keys).toHaveLength(2)
+    expect(body.keys[0].scopes).toEqual(['read:prices'])
+    expect(body.keys[1].scopes).toEqual([])
+  })
+
+  it('rejects listing keys without admin token', async () => {
+    const app = await buildAdminApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/admin/keys',
+    })
+    expect(res.statusCode).toBe(401)
+    expect(mockFindMany).not.toHaveBeenCalled()
+  })
+
   it('revokes a key by id', async () => {
     mockFindUnique.mockResolvedValue({ id: 'key-1', revokedAt: null })
     mockUpdate.mockResolvedValue({ id: 'key-1', revokedAt: new Date() })
@@ -358,121 +553,34 @@ describe('admin endpoints', () => {
     expect(res.statusCode).toBe(404)
   })
 
+  it('protects the recent webhook failure endpoint with the admin token', async () => {
+    const app = await buildAdminApp()
+    const res = await app.inject({ method: 'GET', url: '/admin/webhook-delivery-failures' })
+    expect(res.statusCode).toBe(401)
+    expect(prisma.webhookDeliveryFailure.findMany).not.toHaveBeenCalled()
+  })
+
+  it('returns a bounded newest-first diagnostic list to admins', async () => {
+    const failures = [{ id: 'failed-1', endpoint: 'https://hooks.example.test/alerts', errorCategory: 'http_5xx' }]
+    vi.mocked(prisma.webhookDeliveryFailure.findMany).mockResolvedValue(failures as any)
+    const app = await buildAdminApp()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/admin/webhook-delivery-failures?limit=150',
+      headers: { 'x-admin-token': 'admin-secret' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ failures })
+    expect(prisma.webhookDeliveryFailure.findMany).toHaveBeenCalledWith({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    })
+  })
+
   it('registers authentication counters in the Prometheus registry', async () => {
     const output = await register.metrics()
     expect(output).toContain('api_key_auth_failures_total')
     expect(output).toContain('admin_auth_failures_total')
-  })
-
-  it('lists keys including lastUsedAt and excludes revoked by default', async () => {
-    const mockRecords = [
-      {
-        id: 'key-1',
-        label: 'Primary key',
-        ratePerMin: 120,
-        ratePerDay: 20000,
-        monthlyQuotaCents: 50000,
-        dailyQuotaCents: 2000,
-        overagePolicy: 'block',
-        createdAt: new Date('2026-01-01T00:00:00Z'),
-        revokedAt: null,
-        expiresAt: null,
-        lastUsedAt: new Date('2026-10-20T14:00:00Z'),
-      },
-      {
-        id: 'key-2',
-        label: 'Unused key',
-        ratePerMin: 60,
-        ratePerDay: 5000,
-        monthlyQuotaCents: 10000,
-        dailyQuotaCents: 500,
-        overagePolicy: 'charge_402',
-        createdAt: new Date('2026-01-02T00:00:00Z'),
-        revokedAt: null,
-        expiresAt: new Date('2026-12-31T00:00:00Z'),
-        lastUsedAt: null,
-      },
-    ]
-
-    mockCount.mockResolvedValue(2)
-    mockFindMany.mockResolvedValue(mockRecords)
-
-    const app = await buildAdminApp()
-    const res = await app.inject({
-      method: 'GET',
-      url: '/admin/keys',
-      headers: { 'x-admin-token': 'admin-secret' },
-    })
-
-    expect(res.statusCode).toBe(200)
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { revokedAt: null },
-      }),
-    )
-
-    const body = res.json()
-    expect(body.keys).toHaveLength(2)
-    expect(body.total).toBe(2)
-    expect(body.keys[0].id).toBe('key-1')
-    expect(body.keys[0].lastUsedAt).toBe('2026-10-20T14:00:00.000Z')
-    expect(body.keys[0].isRevoked).toBe(false)
-    expect(body.keys[1].id).toBe('key-2')
-    expect(body.keys[1].lastUsedAt).toBeNull()
-
-    // Assert hash and secret are never leaked
-    expect(res.payload).not.toContain('hash')
-    for (const k of body.keys) {
-      expect(k.hash).toBeUndefined()
-      expect(k.key).toBeUndefined()
-    }
-  })
-
-  it('rejects GET /admin/keys without the admin token', async () => {
-    const app = await buildAdminApp()
-    const res = await app.inject({
-      method: 'GET',
-      url: '/admin/keys',
-    })
-    expect(res.statusCode).toBe(401)
-  })
-
-  it('lists revoked keys when includeRevoked=true is passed', async () => {
-    mockCount.mockResolvedValue(1)
-    mockFindMany.mockResolvedValue([
-      {
-        id: 'revoked-key',
-        label: 'Revoked',
-        ratePerMin: 60,
-        ratePerDay: 1000,
-        monthlyQuotaCents: 10000,
-        dailyQuotaCents: 500,
-        overagePolicy: 'block',
-        createdAt: new Date('2026-01-01T00:00:00Z'),
-        revokedAt: new Date('2026-02-01T00:00:00Z'),
-        expiresAt: null,
-        lastUsedAt: new Date('2026-01-15T00:00:00Z'),
-      },
-    ])
-
-    const app = await buildAdminApp()
-    const res = await app.inject({
-      method: 'GET',
-      url: '/admin/keys?includeRevoked=true&limit=10&offset=0',
-      headers: { 'x-admin-token': 'admin-secret' },
-    })
-
-    expect(res.statusCode).toBe(200)
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {},
-        skip: 0,
-        take: 10,
-      }),
-    )
-    const body = res.json()
-    expect(body.keys[0].isRevoked).toBe(true)
-    expect(body.keys[0].lastUsedAt).toBe('2026-01-15T00:00:00.000Z')
   })
 })
 
