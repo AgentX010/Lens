@@ -11,12 +11,14 @@ const SPEC_PATH = join(ROOT, 'openapi.yaml')
 const GROUPS: { name: string; prefixes: string[] }[] = [
   { name: 'price', prefixes: ['/price/', '/candles', '/book', '/prices/', '/pools', '/pairs'] },
   { name: 'analytics', prefixes: ['/volumes', '/spreads', '/compare', '/screener', '/benchmark', '/basket'] },
-  { name: 'service', prefixes: ['/status', '/supported', '/discovery', '/usage'] },
+  { name: 'service', prefixes: ['/status', '/supported', '/discovery', '/usage', '/venues', '/snapshot'] },
 ]
 
 // GET routes deliberately without a snippet, with the reason.
 const SKIPPED: Record<string, string> = {
   '/graphql': 'GraphQL query documents are covered in docs/graphql.md',
+  '/live': 'Orchestrator liveness probe, not a data API call',
+  '/ready': 'Orchestrator readiness probe, not a data API call',
 }
 
 // Non-GET operations (POST, DELETE) are not generated. They need request bodies,

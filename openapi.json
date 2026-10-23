@@ -365,7 +365,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -373,7 +374,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "amount",
@@ -425,7 +427,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -433,7 +436,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
@@ -600,7 +604,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -608,7 +613,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "interval",
@@ -943,7 +949,7 @@
                   },
                   "assetB": {
                     "type": "string",
-                    "example": "USDC:GBBD47..."
+                    "example": "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
                   }
                 }
               }
@@ -1142,7 +1148,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -1150,7 +1157,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
@@ -1240,7 +1248,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "XLM"
           },
           {
             "name": "assetB",
@@ -1248,7 +1257,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "example": "USDC"
           },
           {
             "name": "window",
