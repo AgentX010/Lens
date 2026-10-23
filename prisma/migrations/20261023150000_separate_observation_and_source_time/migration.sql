@@ -37,3 +37,7 @@ CREATE INDEX IF NOT EXISTS "price_points_network_pair_key_observed_at_idx"
 
 CREATE INDEX IF NOT EXISTS "price_points_network_pair_key_source_observed_at_idx"
   ON "price_points" ("network", "pair_key", "source", "observed_at" DESC);
+
+-- The source-scoped index now leads on observed_at (see schema.prisma); drop the
+-- timestamp-based one the baseline created so the migrated database matches the schema.
+DROP INDEX IF EXISTS "price_points_network_pair_key_source_timestamp_idx";

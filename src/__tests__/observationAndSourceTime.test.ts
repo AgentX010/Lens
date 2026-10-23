@@ -255,7 +255,7 @@ describe('Observation and Source Time Separation (#240)', () => {
       expect(sql).toMatch(/to_timestamp\(floor\(EXTRACT\(EPOCH FROM observed_at\) \/ \$1\) \* \$1\) AS time/)
       // Verify filtering bounds use observed_at
       expect(sql).toMatch(/observed_at >= \$3/)
-      expect(sql).toMatch(/observed_at <= \$4/)
+      expect(sql).toMatch(/observed_at < \$4/)
       // Verify ordering uses observed_at
       expect(sql).toMatch(/ORDER BY observed_at ASC/)
       expect(sql).toMatch(/ORDER BY observed_at DESC/)
@@ -308,7 +308,7 @@ describe('Observation and Source Time Separation (#240)', () => {
     it('migration script correctly separates observation time and source time backfill', () => {
       const migrationPath = path.resolve(
         __dirname,
-        '../../prisma/migrations/20261016_separate_observation_and_source_time/migration.sql'
+        '../../prisma/migrations/20261023150000_separate_observation_and_source_time/migration.sql'
       )
       expect(fs.existsSync(migrationPath)).toBe(true)
 
