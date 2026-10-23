@@ -513,6 +513,13 @@ const globalConfig = {
     // cheap, pollable summary, so a slightly stale copy is preferable to a
     // per-request scan, but callers must never be shown a minutes-old market.
     snapshotTtl: parseInt(process.env.SNAPSHOT_CACHE_TTL ?? '15', 10),
+    // Issue #495: how long an API-key lookup (positive OR negative) is held in
+    // the in-process auth cache before it must be re-read from Postgres. This
+    // is the worst-case window in which a key revoked on ANOTHER instance can
+    // still authenticate here — on the instance that handles the revoke,
+    // invalidation is immediate. Expiry is re-checked on every cache hit, so
+    // this TTL never extends a key past its own `expiresAt`. Keep it short.
+    apiKeyTtl: parseInt(process.env.API_KEY_CACHE_TTL ?? '30', 10),
   },
   plausibility: {
     minPrice: parseFloat(process.env.PRICE_MIN_PLAUSIBLE ?? '0.0000000001'),

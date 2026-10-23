@@ -267,7 +267,7 @@
         ],
         "responses": {
           "200": {
-            "description": "API status",
+            "description": "API status and health diagnostics",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/CacheControl"
@@ -281,12 +281,66 @@
                     "ok": {
                       "type": "boolean"
                     },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "healthy",
+                        "degraded",
+                        "unhealthy"
+                      ]
+                    },
                     "network": {
                       "type": "string",
                       "enum": [
                         "testnet",
                         "mainnet"
                       ]
+                    },
+                    "health": {
+                      "type": "object",
+                      "properties": {
+                        "process": {
+                          "type": "string"
+                        },
+                        "data": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "process": {
+                      "type": "object",
+                      "properties": {
+                        "uptimeSeconds": {
+                          "type": "number"
+                        },
+                        "memoryUsageMb": {
+                          "type": "number"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "lastIndexedLedger": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "lastProcessedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        },
+                        "ingestLagSeconds": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "isStale": {
+                          "type": "boolean"
+                        }
+                      }
                     },
                     "watchedPairs": {
                       "type": "array",
@@ -306,6 +360,10 @@
                     "ingestLagSeconds": {
                       "type": "integer",
                       "nullable": true
+                    },
+                    "adminConfigured": {
+                      "type": "boolean",
+                      "description": "Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false."
                     }
                   }
                 }
@@ -314,6 +372,33 @@
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "503": {
+            "description": "Service unhealthy or database unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "A fixed phrase, never the database driver's message. This route is public and unauthenticated, and a connection failure carries the host, the user and sometimes the whole connection string; the detail is logged server-side instead.",
+                      "example": "Database unavailable"
+                    },
+                    "pagingCondition": {
+                      "type": "string",
+                      "example": "DATABASE_DOWN"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
