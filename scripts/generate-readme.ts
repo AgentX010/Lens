@@ -73,8 +73,34 @@ export const ENDPOINT_METADATA: Record<string, { displayPath?: string; descripti
     description: 'Add a new trading pair (Admin only)',
   },
   'GET /volumes/{asset}': {
-    displayPath: '/volumes/:asset?window=24h',
-    description: 'Cross-venue traded volume (`24h`, `7d`, `30d`) with a per-venue breakdown',
+    displayPath: '/volumes/:asset?window=24h&network=testnet',
+    description: 'Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown',
+  },
+  'GET /impact/{assetA}/{assetB}': {
+    displayPath: '/impact/:assetA/:assetB?thresholds=1,5,10',
+    description: 'Adaptive slippage ladder and threshold crossing sizes',
+  },
+  'GET /snapshot': {
+    // One network, not `testnet|mainnet`: a raw pipe ends the markdown table
+    // cell, and an escaped one reads worse than just picking an example.
+    displayPath: '/snapshot?network=testnet',
+    description: 'Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object',
+  },
+  'GET /live': {
+    displayPath: '/live',
+    description: 'Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md))',
+  },
+  'GET /ready': {
+    displayPath: '/ready',
+    description: 'Readiness probe — boot complete + dependencies reachable',
+  },
+  'GET /usage/me': {
+    displayPath: '/usage/me',
+    description: 'Usage and quota for the calling API key (requires `Authorization: Bearer <key>`)',
+  },
+  'GET/POST /graphql': {
+    displayPath: '/graphql',
+    description: 'GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md))',
   },
   'GET /spreads/{asset}': {
     displayPath: '/spreads/:asset?window=5m',
@@ -157,10 +183,11 @@ export function renderVenuesTable(adapters: VenueAdapter[] = venueAdapters): str
     '|---|---|---|---|',
   ]
 
+  // No fallback for a missing type/description: VenueAdapter requires both, so
+  // an adapter that does not describe itself fails to compile rather than
+  // producing a row that reads as documented and says nothing.
   for (const adapter of adapters) {
-    const type = adapter.type ?? 'DEX'
-    const desc = adapter.description ?? `${adapter.name} price venue`
-    lines.push(`| ${adapter.name} | \`${adapter.source}\` | ${type} | ${desc} |`)
+    lines.push(`| ${adapter.name} | \`${adapter.source}\` | ${adapter.type} | ${adapter.description} |`)
   }
 
   return lines.join('\n')

@@ -81,6 +81,8 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | AMM | `AMM` | Liquidity Pool | Stellar native AMM liquidity pools (Horizon) |
 | Soroswap | `soroswap_amm` | AMM DEX | Soroswap constant-product automated market maker on Soroban |
 | Aquarius | `aquarius_amm` | Liquidity Pool | Aquarius AMM liquidity pools |
+| DeFindex | `defindex_vault` | Vault | DeFindex yield vaults on Soroban, priced per share |
+| Phoenix | `phoenix_amm` | Liquidity Pool | Phoenix AMM pools on Soroban |
 <!-- VENUES:END -->
 
 ## Endpoints
@@ -89,37 +91,44 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 <!-- ENDPOINTS:START -->
 | Method | Path | Description |
 |---|---|---|
+| GET | `/venues/registry` | List registered venues and their network liveness |
+| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
+| GET | `/tvl` | Total Value Locked across Stellar DeFi venues |
+| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
 | GET | `/status` | Indexer health |
+| GET | `/snapshot?network=testnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
 | GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
 | GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
-| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
-| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
-| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
+| GET | `/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
 | GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
 | GET | `/pools` | Active AMM pools being watched |
 | GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
 | GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
 | GET | `/pairs` | Watched trading pairs |
+| POST | `/pairs` | Add a new trading pair (Admin only) |
+| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
+| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
+| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
+| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
+| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
 | GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
+| GET | `/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
+| GET | `/movers` | Get biggest gainers, biggest losers, and volume movers |
 | GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
 | GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
-| GET | `/status` | Indexer health |
-| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
-| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
-| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
+| GET | `/correlation` | Compute price correlation matrix across a basket of assets over a window |
 | GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
+| GET | `/discovery/search` | Natural language search with ranking and quality evaluation for discoverable resources |
 | POST | `/webhooks` | Subscribe to a price-threshold webhook |
 | DELETE | `/webhooks/:id` | Delete a webhook subscription |
 | GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
+| GET | `/usage` | Get usage and quota for the calling API key (alias for /usage/me) |
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
 | POST | `/verify` | Verify an x402 payment payload |
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
-| POST | `/webhooks` | Subscribe to a price-threshold webhook |
-| DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 <!-- ENDPOINTS:END -->
 
