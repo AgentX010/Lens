@@ -2,14 +2,22 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import fp from 'fastify-plugin'
 import { getUsageSummary, getAllUsageSummaries } from '../x402/metering'
 import { admin_auth_failures_total, api_key_auth_failures_total } from '../metrics'
-import { isAdminAuthorized } from './auth'
+import { checkAdminAuth } from './auth'
 
 export async function registerUsageRoutes(app: FastifyInstance) {
   app.get<{ Params: { keyId: string } }>(
     '/admin/usage/:keyId',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
-      if (!isAdminAuthorized(req)) {
+      const auth = checkAdminAuth(req)
+      if (auth === 'not_configured') {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          code: 'admin_not_configured',
+          message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+        })
+      }
+      if (auth !== 'authorized') {
         admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',
@@ -25,9 +33,17 @@ export async function registerUsageRoutes(app: FastifyInstance) {
 
   app.get(
     '/admin/usage',
-    { config: { public: true } },
+    { config: { admin: true, auth: 'admin' } },
     async (req, reply) => {
-      if (!isAdminAuthorized(req)) {
+      const auth = checkAdminAuth(req)
+      if (auth === 'not_configured') {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          code: 'admin_not_configured',
+          message: 'Admin surface is disabled: ADMIN_TOKEN is not configured on this server.',
+        })
+      }
+      if (auth !== 'authorized') {
         admin_auth_failures_total.inc()
         return reply.status(401).send({
           error: 'Unauthorized',
