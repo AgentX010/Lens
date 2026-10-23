@@ -21,9 +21,6 @@ import {
   classifyRoute,
   parseOrigins,
   isOriginAllowed,
-  ADMIN_ROUTES,
-  CREDENTIALED_ROUTES,
-  PUBLIC_ROUTES,
 } from '../cors'
 
 describe('CORS route classification', () => {
@@ -62,11 +59,32 @@ describe('CORS route classification', () => {
     expect(classifyRoute('/supported')).toBe('public')
   })
 
-  it('exports documented route constants', () => {
-    expect(ADMIN_ROUTES).toContain('/admin/keys')
-    expect(CREDENTIALED_ROUTES).toContain('/usage/me')
-    expect(PUBLIC_ROUTES).toContain('/status')
-    expect(PUBLIC_ROUTES).toContain('/price/{assetA}/{assetB}')
+  it('classifies a percent-encoded admin path as admin, not public', () => {
+    // The router decodes before matching, so this reaches /admin/keys. A
+    // raw-string prefix test would call it public and hand an admin route the
+    // open policy.
+    expect(classifyRoute('/%61dmin/keys')).toBe('admin')
+    expect(classifyRoute('/%2561dmin/keys')).toBe('admin')
+  })
+
+  it('refuses a bare wildcard for credentialed and admin, but allows it for public', () => {
+    // '*' echoed as Access-Control-Allow-Origin alongside credentials: true is
+    // a policy nobody means to write — any site could drive an authenticated
+    // cross-origin call with the browser's credentials attached.
+    expect(isOriginAllowed('https://evil.example', ['*'], false)).toBe(false)
+    expect(isOriginAllowed('https://evil.example', ['*'], true)).toBe(true)
+  })
+
+  it('requires a wildcard entry to match the scheme it names', () => {
+    // 'https://*.example.com' must not admit a plaintext origin.
+    expect(isOriginAllowed('http://app.example.com', ['https://*.example.com'])).toBe(false)
+    expect(isOriginAllowed('https://app.example.com', ['https://*.example.com'])).toBe(true)
+    // A scheme-less entry matches either scheme, as written.
+    expect(isOriginAllowed('http://app.example.com', ['*.example.com'])).toBe(true)
+  })
+
+  it('rejects an unparseable origin rather than matching it', () => {
+    expect(isOriginAllowed('not a url', ['*.example.com'])).toBe(false)
   })
 })
 

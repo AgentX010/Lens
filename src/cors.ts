@@ -14,52 +14,12 @@ import type { FastifyCorsOptions } from '@fastify/cors'
 export type RouteClass = 'public' | 'credentialed' | 'admin'
 
 /**
- * Operator-only admin routes.
+ * Note on route inventories: there is deliberately no hard-coded list of admin,
+ * credentialed or public paths here. {@link classifyRoute} decides from the path
+ * prefix and the request's own credential headers, so a route added later is
+ * classified without anyone remembering to append it to an array. A parallel
+ * list that nothing enforces is exactly how the README's venue table went stale.
  */
-export const ADMIN_ROUTES: readonly string[] = [
-  '/admin/keys',
-  '/admin/keys/{id}',
-  '/admin/usage',
-  '/admin/usage/{keyId}',
-] as const
-
-/**
- * Credentialed routes requiring caller authentication.
- */
-export const CREDENTIALED_ROUTES: readonly string[] = [
-  '/usage/me',
-] as const
-
-/**
- * Public routes that serve open market data, status, discovery, and specs.
- */
-export const PUBLIC_ROUTES: readonly string[] = [
-  '/status',
-  '/metrics',
-  '/price/{assetA}/{assetB}',
-  '/price/{assetA}/{assetB}/route',
-  '/price/{assetA}/{assetB}/history',
-  '/price/{assetA}/{assetB}/depth',
-  '/price/twap/{assetA}/{assetB}',
-  '/price/vwap/{assetA}/{assetB}',
-  '/candles/{assetA}/{assetB}',
-  '/prices/history',
-  '/pools',
-  '/pairs',
-  '/volumes/{asset}',
-  '/spreads/{asset}',
-  '/compare/{asset}',
-  '/screener',
-  '/benchmark/{asset}',
-  '/basket',
-  '/discovery/resources',
-  '/supported',
-  '/verify',
-  '/settle',
-  '/graphql',
-  '/graphiql',
-  '/ws',
-] as const
 
 export interface CorsConfig {
   /**
@@ -121,23 +81,55 @@ export function getPublicBlockedOrigins(config?: CorsConfig): string[] {
 }
 
 /**
- * Checks if a given origin matches any of the allowed origins.
+ * Whether an origin matches any entry in an allow-list.
+ *
+ * `allowWildcard` is false for the credentialed and admin classes. A bare `*`
+ * there would echo whatever `Origin` the request carried back as
+ * `Access-Control-Allow-Origin` alongside `credentials: true` — a policy no
+ * operator means to write, because it lets any site drive an authenticated
+ * cross-origin call with the browser's credentials attached. Public reads may
+ * use it: they are open to every origin anyway and send no credentials.
+ *
+ * A wildcard entry must also match the scheme. `https://*.example.com` had its
+ * scheme stripped before comparison, so it matched `http://evil.example.com`
+ * too — an https-only allow-list that silently permitted plaintext.
  */
-export function isOriginAllowed(origin: string, allowedOrigins: readonly string[]): boolean {
+export function isOriginAllowed(
+  origin: string,
+  allowedOrigins: readonly string[],
+  allowWildcard = true
+): boolean {
   if (allowedOrigins.length === 0) return false
+
+  let requested: URL
+  try {
+    requested = new URL(origin.trim())
+  } catch {
+    return false
+  }
   const normalizedOrigin = origin.trim().toLowerCase()
+  const requestedHost = requested.hostname.toLowerCase()
+  const requestedScheme = requested.protocol.toLowerCase()
+
   return allowedOrigins.some(allowed => {
     const norm = allowed.trim().toLowerCase()
-    if (norm === '*' || norm === normalizedOrigin) return true
-    if (norm.startsWith('*.') || norm.startsWith('http://*.') || norm.startsWith('https://*.')) {
-      const domainPart = norm.replace(/^https?:\/\/\*\./, '').replace(/^\*\./, '')
-      try {
-        const u = new URL(origin)
-        return u.hostname === domainPart || u.hostname.endsWith(`.${domainPart}`)
-      } catch {
-        return false
-      }
+    if (norm === '*') return allowWildcard
+    if (norm === normalizedOrigin) return true
+
+    const schemed = /^(https?:)\/\/\*\.(.+)$/.exec(norm)
+    if (schemed) {
+      const [, scheme, domainPart] = schemed
+      if (scheme !== requestedScheme) return false
+      return requestedHost === domainPart || requestedHost.endsWith(`.${domainPart}`)
     }
+
+    // A scheme-less `*.example.com` matches either scheme, which is what an
+    // operator who wrote no scheme asked for.
+    if (norm.startsWith('*.')) {
+      const domainPart = norm.slice(2)
+      return requestedHost === domainPart || requestedHost.endsWith(`.${domainPart}`)
+    }
+
     return false
   })
 }
@@ -152,7 +144,24 @@ export function classifyRoute(
   path: string,
   headers?: Record<string, string | string[] | undefined>
 ): RouteClass {
-  const normalizedPath = (path || '/').split('?')[0].replace(/\/+$/, '') || '/'
+  // Decode before testing the prefix. The router percent-decodes a path before
+  // matching, so `/%61dmin/keys` reaches the admin handler while a raw-string
+  // test for '/admin' says it is something else — which would hand an admin
+  // route the wide-open public policy. Repeated until stable so a double
+  // encoding (`%2561dmin`) cannot survive a single pass; a malformed escape
+  // leaves the path as it was rather than throwing.
+  let decoded = (path || '/').split('?')[0]
+  for (let i = 0; i < 3; i++) {
+    let next: string
+    try {
+      next = decodeURIComponent(decoded)
+    } catch {
+      break
+    }
+    if (next === decoded) break
+    decoded = next
+  }
+  const normalizedPath = decoded.replace(/\/+$/, '') || '/'
 
   // 1. Admin endpoints
   if (normalizedPath === '/admin' || normalizedPath.startsWith('/admin/')) {
@@ -198,7 +207,7 @@ export function getCorsOptionsForRequest(
   if (routeClass === 'admin') {
     // Admin routes: closed by default unless explicitly configured
     const adminAllowed = getAdminAllowedOrigins(config)
-    if (origin && adminAllowed.length > 0 && isOriginAllowed(origin, adminAllowed)) {
+    if (origin && adminAllowed.length > 0 && isOriginAllowed(origin, adminAllowed, false)) {
       return {
         origin: origin,
         credentials: false,
@@ -215,7 +224,7 @@ export function getCorsOptionsForRequest(
   if (routeClass === 'credentialed') {
     // Credentialed routes: restricted to allowed origins
     const allowed = getCredentialedAllowedOrigins(config)
-    if (origin && isOriginAllowed(origin, allowed)) {
+    if (origin && isOriginAllowed(origin, allowed, false)) {
       return {
         origin: origin,
         credentials: true,
