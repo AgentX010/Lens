@@ -13,6 +13,9 @@ import {
   markGapsPermanent,
 } from './gaps'
 import type { BackfillResult } from './types'
+import { createLogger } from '../logger'
+
+const log = createLogger('backfill')
 
 function toAsset(asset: { code: string; issuer: string | null }): Asset {
   if (!asset.issuer || asset.code === 'XLM') return Asset.native()
@@ -94,7 +97,7 @@ export async function backfill(options: BackfillOptions): Promise<BackfillResult
     })
 
     const message = `Source "${source}" does not support historical data fetch; gap [${start.toISOString()} - ${end.toISOString()}] cannot be filled and has been marked permanent.`
-    console.warn(`[backfill] ${message}`)
+    log.warn({ source, start, end }, message)
 
     return {
       success: false,
@@ -203,7 +206,7 @@ async function backfillSdexTrades(
         hasMore = false
       }
     } catch (err) {
-      console.error(`[backfill] Error paging SDEX trades for ${pair.pairKey}:`, (err as Error).message)
+      log.error({ err, pair: pair.pairKey }, 'Error paging SDEX trades')
       break
     }
   }
@@ -295,7 +298,7 @@ async function backfillAmmTrades(
       }
     }
   } catch (err) {
-    console.error(`[backfill] Error paging AMM trades for ${pair.pairKey}:`, (err as Error).message)
+    log.error({ err, pair: pair.pairKey }, 'Error paging AMM trades')
   }
 
   return totalIngested
