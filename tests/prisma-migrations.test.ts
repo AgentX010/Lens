@@ -24,8 +24,9 @@ import { join } from 'node:path'
  * schema file and never opens a connection, so they run inside plain `npm test`
  * and the CI build job with no Postgres present. The general, multi-migration
  * drift guard (replaying every migration against a real database) lives in the
- * `db-migration-drift` CI job and scripts/db-drift-check.sh, both of which need
- * a live database.
+ * `db-migrations` CI job and scripts/db-drift-check.sh, both of which need a
+ * live database. Adopting the baseline on a database that predates the history
+ * is a third, separate concern: tests/db-migrate-baseline.test.ts.
  */
 
 const repoRoot = fileURLToPath(new URL('../', import.meta.url))

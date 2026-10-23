@@ -18,6 +18,24 @@ CREATE TABLE "price_points" (
 );
 
 -- CreateTable
+CREATE TABLE "lending_rates" (
+    "id" TEXT NOT NULL,
+    "network" TEXT NOT NULL DEFAULT 'testnet',
+    "asset" TEXT NOT NULL,
+    "asset_issuer" TEXT,
+    "venue" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "pool_id" TEXT NOT NULL,
+    "pool_name" TEXT,
+    "supply_rate" DECIMAL(18,8) NOT NULL,
+    "borrow_rate" DECIMAL(18,8) NOT NULL,
+    "ledger" INTEGER NOT NULL,
+    "timestamp" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "lending_rates_pkey" PRIMARY KEY ("id","timestamp")
+);
+
+-- CreateTable
 CREATE TABLE "pool_snapshots" (
     "id" TEXT NOT NULL,
     "network" TEXT NOT NULL DEFAULT 'testnet',
@@ -152,6 +170,21 @@ CREATE TABLE "webhooks" (
 );
 
 -- CreateTable
+CREATE TABLE "webhook_delivery_failures" (
+    "id" TEXT NOT NULL,
+    "endpoint" TEXT NOT NULL,
+    "payload" JSONB NOT NULL,
+    "attempt_count" INTEGER NOT NULL,
+    "last_status" INTEGER,
+    "error_category" TEXT NOT NULL,
+    "first_attempt_at" TIMESTAMP(3) NOT NULL,
+    "last_attempt_at" TIMESTAMP(3) NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "webhook_delivery_failures_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "api_keys" (
     "id" TEXT NOT NULL,
     "hash" TEXT NOT NULL,
@@ -159,12 +192,39 @@ CREATE TABLE "api_keys" (
     "rate_per_min" INTEGER NOT NULL DEFAULT 60,
     "rate_per_day" INTEGER NOT NULL DEFAULT 10000,
     "revoked_at" TIMESTAMP(3),
+    "expires_at" TIMESTAMP(3),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "monthly_quota_cents" INTEGER DEFAULT 10000,
     "daily_quota_cents" INTEGER DEFAULT 500,
     "overage_policy" TEXT NOT NULL DEFAULT 'block',
+    "scopes" TEXT[] DEFAULT ARRAY[]::TEXT[],
 
     CONSTRAINT "api_keys_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "oracle_publications" (
+    "id" TEXT NOT NULL,
+    "network" TEXT NOT NULL DEFAULT 'testnet',
+    "pair_key" TEXT NOT NULL,
+    "quoted_asset" TEXT NOT NULL,
+    "base_asset" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "trigger" TEXT,
+    "price" DECIMAL(36,18),
+    "scaled_price" TEXT,
+    "decimals" INTEGER,
+    "feed_timestamp" BIGINT,
+    "resolution" INTEGER,
+    "venues" TEXT,
+    "source_count" INTEGER,
+    "deviation_pct" DOUBLE PRECISION,
+    "reason" TEXT,
+    "tx_hash" TEXT,
+    "error_message" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "oracle_publications_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -172,6 +232,15 @@ CREATE INDEX "price_points_network_pair_key_timestamp_idx" ON "price_points"("ne
 
 -- CreateIndex
 CREATE INDEX "price_points_network_pair_key_source_timestamp_idx" ON "price_points"("network", "pair_key", "source", "timestamp" DESC);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "price_point_identity" ON "price_points"("network", "source", "event_id");
+
+-- CreateIndex
+CREATE INDEX "lending_rates_network_asset_timestamp_idx" ON "lending_rates"("network", "asset", "timestamp" DESC);
+
+-- CreateIndex
+CREATE INDEX "lending_rates_network_asset_venue_timestamp_idx" ON "lending_rates"("network", "asset", "venue", "timestamp" DESC);
 
 -- CreateIndex
 CREATE INDEX "pool_snapshots_network_pool_id_timestamp_idx" ON "pool_snapshots"("network", "pool_id", "timestamp" DESC);
@@ -198,5 +267,14 @@ CREATE UNIQUE INDEX "settlement_attempt_identity" ON "settlement_attempts"("netw
 CREATE INDEX "webhooks_network_asset_a_asset_b_idx" ON "webhooks"("network", "asset_a", "asset_b");
 
 -- CreateIndex
+CREATE INDEX "webhook_delivery_failures_created_at_idx" ON "webhook_delivery_failures"("created_at" DESC);
+
+-- CreateIndex
 CREATE UNIQUE INDEX "api_keys_hash_key" ON "api_keys"("hash");
+
+-- CreateIndex
+CREATE INDEX "oracle_publications_network_pair_key_created_at_idx" ON "oracle_publications"("network", "pair_key", "created_at" DESC);
+
+-- CreateIndex
+CREATE INDEX "oracle_publications_network_quoted_asset_feed_timestamp_idx" ON "oracle_publications"("network", "quoted_asset", "feed_timestamp" DESC);
 
