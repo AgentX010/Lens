@@ -68,8 +68,6 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         })
       }
 
-      const { label, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
-      const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy } = req.body ?? {}
       const { label, expiresAt, ratePerMin, ratePerDay, monthlyQuotaCents, dailyQuotaCents, overagePolicy, scopes } = req.body ?? {}
       if (!label || typeof label !== 'string' || label.trim().length === 0) {
         return reply.status(400).send({ error: 'label is required' })
@@ -186,7 +184,6 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.status(200).send({ id, revoked: true })
     },
   )
-}
 
   app.post<{ Params: { id: string }; Body: RotateKeyBody }>(
     '/admin/keys/:id/rotate',
