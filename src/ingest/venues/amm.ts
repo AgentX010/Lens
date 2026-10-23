@@ -280,6 +280,7 @@ export const ammAdapter: VenueAdapter<any, any> = {
   name: 'AMM',
   kind: 'amm',
   source: 'AMM',
+  classification: 'primary',
   type: 'Liquidity Pool',
   description: 'Stellar native AMM liquidity pools (Horizon)',
 

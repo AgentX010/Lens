@@ -478,6 +478,7 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
   name: 'Soroswap',
   kind: 'amm',
   source: 'soroswap_amm',
+  classification: 'primary',
   type: 'AMM DEX',
   description: 'Soroswap constant-product automated market maker on Soroban',
 

@@ -190,6 +190,7 @@ export const sdexAdapter: VenueAdapter<WatchedPair, SdexRawTrades> = {
   name: 'SDEX',
   kind: 'orderbook',
   source: 'SDEX',
+  classification: 'primary',
   type: 'Order Book',
   description: "Stellar's Classic Order Book (SDEX)",
 
