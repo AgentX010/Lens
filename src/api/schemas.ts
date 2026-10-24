@@ -103,6 +103,18 @@ export const statusResponseSchema = {
   },
 } as const
 
+export const statusErrorResponseSchema = {
+  type: 'object',
+  required: ['ok', 'status', 'error', 'pagingCondition'],
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean', const: false },
+    status: { type: 'string', const: 'unhealthy' },
+    error: { type: 'string' },
+    pagingCondition: { type: 'string' },
+  },
+} as const
+
 /** GET /price/:assetA/:assetB */
 export const priceResponseSchema = {
   type: 'object',
