@@ -4,7 +4,8 @@ All `/admin/keys` routes require the `ADMIN_TOKEN` configured by the operator.
 The token can be sent in `X-Admin-Token` or as a bearer token.
 
 `GET /admin/keys` returns the live keys by default. It returns key identifiers,
-labels, rate and quota settings, creation time, expiry and revocation state; it
+labels, scopes, rate and quota settings, creation time, expiry, last-used time
+(`lastUsedAt`, null if the key has never authenticated) and revocation state; it
 never returns the stored hash or plaintext key.
 
 Pagination uses `limit` and `offset`. The default page size is 50 and the
