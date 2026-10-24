@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { formatPrice, formatVolume } from '../pricing/precision'
 
 const INTERVAL_SECONDS: Record<string, number> = {
   '1m': 60,

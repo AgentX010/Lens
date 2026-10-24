@@ -85,8 +85,18 @@ describe('Issue #230: numeric precision across aggregations and edge serializati
         capturedSql = sql
         return {
           rows: [
-            { source: 'SDEX', volume: '0.1000000', trade_count: 1 },
-            { source: 'AMM', volume: '0.2000000', trade_count: 1 },
+            {
+              total_volume: '0.3000000',
+              by_venue: { SDEX: 0.1, AMM: 0.2 },
+              venues: ['AMM', 'SDEX'],
+              trade_count: 2,
+              observed_sample_count: 2,
+              trade_count_by_venue: { SDEX: 1, AMM: 1 },
+              median_trade_size: '0.15',
+              top_trade_volume_share: '0.6666666666666666',
+              volume_concentration: '0.5555555555555556',
+              latest_trade_at: new Date('2026-01-01T00:00:00.000Z'),
+            },
           ],
         }
       })

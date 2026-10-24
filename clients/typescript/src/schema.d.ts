@@ -180,7 +180,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get price history buckets */
+        /**
+         * Get price history buckets
+         * @description Returns price aggregate buckets (1m, 5m, 1h, 24h). Prices are serialized up to 18 decimal places and volumes up to 7 decimal places matching Stellar stroop precision.
+         */
         get: operations["getPriceHistory"];
         put?: never;
         post?: never;
@@ -214,7 +217,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get OHLCV candle data */
+        /**
+         * Get OHLCV candle data
+         * @description Aggregates price_points into interval-sized buckets using exact numeric arithmetic. Prices are serialized up to 18 decimal places and volumes up to 7 decimal places matching Stellar stroop precision.
+         */
         get: operations["getCandles"];
         put?: never;
         post?: never;
@@ -233,7 +239,7 @@ export interface paths {
         };
         /**
          * Get historical 1-minute price snapshots
-         * @description Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets. Snapshots are retained for ~30 days. Gated by x402 (matches the /price prefix).
+         * @description Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets. Aggregations use exact numeric arithmetic; prices are serialized up to 18 decimal places and volumes up to 7 decimal places. Snapshots are retained for ~30 days. Gated by x402 (matches the /price prefix).
          */
         get: operations["getPriceSnapshots"];
         put?: never;
@@ -705,10 +711,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Query latest lending and borrow rates across pools
+         * @description Returns the latest supply and borrow rates, utilisation, and reserves for lending markets.
+         */
+        get: operations["getLendingRates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        LendingRateEntry: {
+            id: string;
+            /** @example blend */
+            venue: string;
+            /** @example blend */
+            source: string;
+            /** @example mainnet */
+            network: string;
+            poolId: string;
+            poolName?: string | null;
+            /** @example USDC */
+            asset: string;
+            assetAddress?: string | null;
+            supplyApy: number;
+            borrowApy: number;
+            supplyApr?: number | null;
+            borrowApr?: number | null;
+            /** @description Borrowed / supplied as a fraction. Null for venues that publish rates only. */
+            utilization?: number | null;
+            totalSupply?: number | null;
+            totalBorrowed?: number | null;
+            reserves?: number | null;
+            ledger?: number;
+            /** Format: date-time */
+            timestamp: string;
+        };
+        LendingRatesResponse: {
+            network: string;
+            rates: components["schemas"]["LendingRateEntry"][];
+        };
         InternalErrorResponse: {
             /**
              * @example internal_error
@@ -3116,6 +3172,43 @@ export interface operations {
                 };
             };
             402: components["responses"]["PaymentRequired"];
+        };
+    };
+    getLendingRates: {
+        parameters: {
+            query?: {
+                /** @description Filter by asset symbol (e.g. USDC, XLM) */
+                asset?: string;
+                /** @description Filter by pool contract ID */
+                poolId?: string;
+                /** @description Stellar network to query (testnet or mainnet) */
+                network?: "testnet" | "mainnet";
+                /** @description Maximum number of rate records to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest lending rates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LendingRatesResponse"];
+                };
+            };
+            /** @description Invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
         };
     };
 }

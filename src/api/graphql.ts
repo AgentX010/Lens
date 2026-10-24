@@ -26,6 +26,7 @@ import {
 import { priceEmitter, PRICE_PUBLISHED, type PricePublishedEvent } from '../events'
 import { HISTORY_INTERVAL_SECONDS, MAX_HISTORY_POINTS } from './history'
 import { getMaxGraphQLQueryDepth, queryDepthValidationRules } from './queryDepth'
+import { formatPrice, formatVolume } from '../pricing/precision'
 
 const WINDOW_SECONDS: Record<string, number> = {
   ...HISTORY_INTERVAL_SECONDS,
