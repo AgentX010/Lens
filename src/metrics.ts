@@ -107,6 +107,9 @@ export const active_subscriptions = new Gauge({
   // pair string. Guarded in practice: only registered deployments accept
   // subscriptions, and a pair that is not watched never receives data.
   labelNames: ['pair'],
+  registers: [register]
+})
+
 export const price_rejected_total = new Counter({
   name: 'price_rejected_total',
   help: 'Total number of prices rejected due to plausibility sanity bounds',
