@@ -1,4 +1,6 @@
+// @ts-ignore — @x402 packages ship ESM-only types incompatible with commonjs moduleResolution
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
+// @ts-ignore
 import { ExactStellarScheme } from '@x402/stellar/exact/client';
 import { createEd25519Signer } from '@x402/stellar';
 

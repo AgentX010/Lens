@@ -586,8 +586,6 @@ export class BazaarMcpServer {
           );
         }
 
-        const url = String(request.params.arguments?.url);
-        const method = request.params.arguments?.method ? String(request.params.arguments?.method) : 'GET';
         const parsed = PAID_CALL_ARGUMENTS_SCHEMA.safeParse(request.params.arguments ?? {});
         if (!parsed.success) {
           return this.createErrorResponse('ERR_BAD_REQUEST', formatZodError(parsed.error));
@@ -776,20 +774,6 @@ export class BazaarMcpServer {
     }
   }
 
-    if (
-      msg.includes('no network/scheme registered') ||
-      msg.includes('no scheme registered') ||
-      msg.includes('missing key') ||
-      msg.includes('not configured for network')
-    ) {
-      return this.createErrorResponse('ERR_PAYMENT_REJECTED', e.message || 'No payment signer configured for the required network.');
-    }
-
-    if (msg.includes('fetch') || msg.includes('network')) {
-      return this.createErrorResponse('ERR_SERVICE_UNREACHABLE', 'Failed to reach the service: ' + e.message);
-    }
-    
-    return this.createErrorResponse('ERR_INTERNAL_FAILURE', e.message || 'An unknown error occurred during the paid call.');
   /**
    * True when an error proves the payment never settled: the transport failed
    * before offering payment, or the wallet could not fund or submit it. A
@@ -798,6 +782,10 @@ export class BazaarMcpServer {
   private paymentCouldNotHaveSettled(e: any): boolean {
     const msg = String(e?.message || e).toLowerCase();
     return (
+      msg.includes('no network/scheme registered') ||
+      msg.includes('no scheme registered') ||
+      msg.includes('missing key') ||
+      msg.includes('not configured for network') ||
       msg.includes('failed to parse payment requirements') ||
       msg.includes('failed to create payment payload') ||
       msg.includes('signatureexpirationledger') ||
