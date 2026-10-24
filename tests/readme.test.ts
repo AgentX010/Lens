@@ -9,6 +9,7 @@ import {
   renderVenuesTable,
   renderEndpointsTable,
   renderReadme,
+  readmeIsCurrent,
   VENUES_START_TAG,
   VENUES_END_TAG,
   ENDPOINTS_START_TAG,
@@ -123,6 +124,15 @@ describe('README venue list and endpoint table generators', () => {
 
     // If an unregistered fake route is expected, it must diverge
     expect(currentEndpoints).not.toContain('/fake/nonexistent/endpoint')
+  })
+
+  it('readme:check passes on the committed README and fails once the endpoint table is edited by hand', () => {
+    const committed = readFileSync(readmePath, 'utf8')
+    expect(readmeIsCurrent(committed)).toBe(true)
+
+    const edited = committed.replace('| GET | `/tvl` |', '| GET | `/tvl-renamed` |')
+    expect(edited).not.toBe(committed)
+    expect(readmeIsCurrent(edited)).toBe(false)
   })
 
   it('renders README deterministically in-place', () => {

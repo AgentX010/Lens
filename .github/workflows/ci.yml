@@ -24,6 +24,8 @@ jobs:
         run: git diff --exit-code -- clients/typescript
       - name: Typecheck the generated TypeScript client
         run: npm run client:typecheck
+      - name: Fail if the committed README tables are out of date with openapi.yaml
+        run: npm run readme:check
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test --if-present
