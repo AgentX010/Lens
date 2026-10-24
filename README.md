@@ -134,6 +134,7 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/supported` | Payment kinds and extensions this facilitator supports |
 | POST | `/verify` | Verify an x402 payment payload |
 | POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
+| GET | `/rates` | Query latest lending and borrow rates across pools |
 | GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
 <!-- ENDPOINTS:END -->
 

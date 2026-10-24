@@ -126,6 +126,7 @@ export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
   kind: 'amm',
   source: 'aquarius_amm',
+  classification: 'aggregator',
   type: 'Liquidity Pool',
   description: 'Aquarius AMM liquidity pools',
 

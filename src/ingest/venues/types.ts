@@ -15,6 +15,8 @@ export interface VenuePricePoint {
   eventId?: string
 }
 
+export type VenueClassification = 'primary' | 'aggregator'
+
 /**
  * Universal interface for all venue adapters (SDEX, Stellar AMM, Soroswap, Aquarius, Phoenix, etc.).
  *
@@ -29,6 +31,7 @@ export type VenueKind = 'orderbook' | 'amm' | 'oracle' | 'unknown'
 export interface VenueAdapter<TTarget = any, TRaw = any> {
   readonly name: string
   readonly source: string
+  readonly classification: VenueClassification
   /** Kind is descriptive metadata used by API projections, not the runner. */
   readonly kind?: VenueKind
 
