@@ -418,7 +418,10 @@ export const poolsResponseSchema = {
 
 export const depthResponseSchema = {
   type: 'object',
-  required: ['assetA', 'assetB', 'pairKey', 'spotPrice', 'executionPrice', 'slippagePct', 'asks', 'bids', 'source'],
+  // `status` discriminates the two arms. The priced fields are not required,
+  // because an unavailable answer deliberately carries no numbers — reporting
+  // a spotPrice of 0 for "no pool could price this" is the bug #219 is about.
+  required: ['assetA', 'assetB', 'pairKey', 'status'],
   additionalProperties: false,
   properties: {
     assetA: { type: 'string' },
@@ -452,6 +455,33 @@ export const depthResponseSchema = {
       },
     },
     source: { type: 'string', enum: ['AMM', 'SDEX', 'BOTH'] },
+    status: { type: 'string', enum: ['ok', 'unavailable'] },
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    reason: { type: 'string' },
+    pool: {
+      type: 'object',
+      required: ['poolId', 'feeBp', 'feeReadAt', 'reservesObservedAt'],
+      additionalProperties: false,
+      properties: {
+        poolId: { type: 'string' },
+        // Read from the venue per pool, never assumed — see src/pricing/pool-fee.ts.
+        feeBp: { type: 'number' },
+        feeReadAt: { type: 'string' },
+        reservesObservedAt: { type: 'string' },
+      },
+    },
+    excludedPools: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['poolId', 'reason'],
+        additionalProperties: false,
+        properties: {
+          poolId: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+    },
   },
 } as const
 

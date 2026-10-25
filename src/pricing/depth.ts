@@ -1,5 +1,6 @@
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import { getPoolFee, type PoolFeeOptions } from './pool-fee'
 
 export interface DepthLevel {
   price: number
@@ -29,6 +30,22 @@ export interface DepthResult {
   }
   excludedPools: ExcludedPool[]
 }
+
+/**
+ * No pool could price this pair: either none exists on this network, or every
+ * candidate was excluded. Carries the reason and the exclusions rather than
+ * zeros, so a caller can tell "no liquidity" from "a price of 0".
+ */
+export interface DepthUnavailable {
+  status: 'unavailable'
+  network: string
+  pairKey: string
+  reason: string
+  excludedPools: ExcludedPool[]
+}
+
+/** What {@link getDepth} answers: a priced result, or a reasoned refusal. */
+export type DepthOutcome = DepthResult | DepthUnavailable
 
 export interface ImpactPoint {
   size: number
@@ -220,17 +237,16 @@ export function generateAMMDepthLevels(
   return { asks, bids }
 }
 
-export async function getAMMDepth(
+export async function loadLatestAmmPools(
+  network: string,
   pairKey: string,
-  amount: number,
-  network: NetworkName = activeNetwork,
-): Promise<DepthResult | null> {
+): Promise<Array<{ poolId: string; reserveA: number; reserveB: number; observedAt: Date }>> {
   // Both halves of the lookup are network-scoped: the pool_snapshots scan and
   // the price_points subquery that names which pools hold this pair. Pool ids
   // are only unique within a network, so filtering just the outer scan would
   // happily price a mainnet pair off a testnet pool's reserves.
   const result = await pgPool.query(
-    `SELECT DISTINCT ON (ps.pool_id) ps.reserve_a, ps.reserve_b, ps.fee_bp
+    `SELECT DISTINCT ON (ps.pool_id) ps.pool_id, ps.timestamp, ps.reserve_a, ps.reserve_b, ps.fee_bp
      FROM pool_snapshots ps
      WHERE ps.network = $2
        AND ps.pool_id IN (

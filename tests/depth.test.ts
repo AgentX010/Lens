@@ -1,14 +1,42 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 
+// Spreading the real config above enables API-key auth; these tests exercise
+// pricing, not authentication. tests/httpStatusCodes.test.ts does the same.
+process.env.REQUIRE_API_KEY = 'false'
+
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // Path guesses: confirm these match your repo.
 
 vi.mock('../src/db', () => ({ pgPool: { query: vi.fn() } }))
 
-vi.mock('../src/config', () => ({
-  activeNetwork: 'testnet',
-  getNetworkConfig: () => ({ horizon: { url: 'https://horizon.example.test' } }),
-}))
+// Spread the real module: src/api/rest.ts imports `config` as well, and a mock
+// that defines only the two symbols this test cares about makes every other
+// import from here undefined.
+vi.mock('../src/config', async importActual => {
+  const actual = await importActual<typeof import('../src/config')>()
+  return {
+    ...actual,
+    activeNetwork: 'testnet',
+    // findPair in src/api/rest.ts is local and reads getNetworkConfig(network).pairs,
+    // so the watched pair has to come from here — mocking '../src/pairs' does
+    // not reach it. horizonUrl is overridden so getPoolFee talks to the
+    // injected fetch below rather than a real Horizon.
+    getNetworkConfig: (network?: string) => ({
+      ...actual.getNetworkConfig((network ?? 'testnet') as never),
+      horizon: { url: 'https://horizon.example.test' },
+      pairs: [
+        {
+          pairKey: 'USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5/XLM',
+          assetA: { code: 'XLM', issuer: null },
+          assetB: {
+            code: 'USDC',
+            issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+          },
+        },
+      ],
+    }),
+  }
+})
 
 vi.mock('../src/pairs', () => ({
   findPair: (assetA: string, assetB: string) => {

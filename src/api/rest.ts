@@ -438,10 +438,16 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     Querystring: { amount?: string; decimals?: string; decimalFormat?: string }
   }>(
     '/price/:assetA/:assetB/depth',
-    { config: { scope: 'read:prices' }, schema: { response: { 200: depthResponseSchema } } },
+    {
+      config: { scope: 'read:prices' },
+      schema: { response: { 200: depthResponseSchema, 503: depthResponseSchema } },
+    },
     async (req, reply) => {
       const { assetA, assetB } = req.params
-      const amount = parseFloat(req.query.amount ?? '1000')
+      // Number(), not parseFloat(): parseFloat('100abc') is 100, so a typo in a
+      // query string would silently price a different trade than the caller
+      // asked for. Trailing junk is a 400.
+      const amount = Number(req.query.amount ?? '1000')
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
 
@@ -451,14 +457,24 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       // Depth reads are network-scoped on both legs (pool_snapshots and the
       // price_points subquery that names this pair's pools), so a mainnet pair
       // is never priced off a testnet pool's reserves.
-      const depthResult = await getDepth(pair.pairKey, amount, network)
+      // Argument order is (network, pairKey, amount, feeOpts). network and
+      // pairKey are both strings, so swapping them compiles cleanly and then
+      // prices every pair against a network named "XLM/USDC" — worth reading
+      // twice before editing this line.
+      const depthResult = await getDepth(network, pair.pairKey, amount, {
+        horizonUrl: getNetworkConfig(network).horizon.url,
+      })
 
-      return {
+      // An unavailable answer is a 503, not a 200 with zeros: the pair is
+      // watched, we simply cannot price it right now, and a caller retrying
+      // later is the correct response to that.
+      return reply.status(depthResult.status === 'unavailable' ? 503 : 200).send({
         assetA: pair.assetA.code,
         assetB: pair.assetB.code,
-        pairKey: pair.pairKey,
+        // pairKey and network come from depthResult, which carries both on each
+        // arm of the union. Naming pairKey here too made it a duplicate key.
         ...depthResult,
-      }
+      })
     }
   )
 
