@@ -1556,13 +1556,6 @@ export interface components {
         };
     };
     responses: {
-        /** @description Invalid parameters */
-        BadRequest: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content?: never;
-        };
         /** @description Payment Required */
         PaymentRequired: {
             headers: {
