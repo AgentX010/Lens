@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
+import {
+  HISTORY_DEFAULT_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  parseLimit,
+  slicePage,
+} from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { apiError } from '../errors'
 import {
@@ -108,8 +115,8 @@ export async function queryHistory(
   const result = await pgPool.query(
     `SELECT
        to_timestamp(floor(EXTRACT(EPOCH FROM ts) / $1) * $1) AS bucket,
-       (array_agg(price::float ORDER BY ts DESC))[1] AS price,
-       SUM(volume::float) AS volume
+       (array_agg(price ORDER BY ts DESC))[1] AS price,
+       SUM(volume) AS volume
      FROM price_snapshots
      WHERE pair = $2 AND network = $5
        AND ts >= $3
@@ -121,8 +128,8 @@ export async function queryHistory(
 
   return result.rows.map(r => ({
     ts: new Date(r.bucket).toISOString(),
-    price: Number(r.price),
-    volume: Number(r.volume),
+    price: formatPrice(r.price) ?? 0,
+    volume: formatVolume(r.volume),
   }))
 }
 
@@ -198,6 +205,26 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
         afterTs = new Date(String(decoded.value))
         if (isNaN(afterTs.getTime())) {
           return reply.status(400).send(apiError('invalid_parameter', 'Invalid cursor format'))
+        }
+      }
+    }
+
+    const parsedLimit = parseLimit(req.query.limit, HISTORY_DEFAULT_LIMIT, MAX_HISTORY_POINTS)
+    if ('error' in parsedLimit) {
+      return reply.status(400).send({ error: parsedLimit.error })
+    }
+    const { limit } = parsedLimit
+
+    let afterTs: Date | undefined
+    if (req.query.cursor) {
+      const decoded = decodeCursor(req.query.cursor)
+      if (decoded === null) {
+        return reply.status(400).send({ error: 'Invalid cursor format' })
+      }
+      if (decoded !== 'skip') {
+        afterTs = new Date(String(decoded.value))
+        if (isNaN(afterTs.getTime())) {
+          return reply.status(400).send({ error: 'Invalid cursor format' })
         }
       }
     }

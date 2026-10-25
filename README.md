@@ -91,50 +91,55 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 <!-- ENDPOINTS:START -->
 | Method | Path | Description |
 |---|---|---|
-| GET | `/venues/registry` | List registered venues and their network liveness |
-| GET | `/venues` | Venue Share of Volume |
-| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
-| GET | `/tvl` | Total Value Locked across Stellar DeFi venues |
-| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
-| GET | `/status` | Indexer health |
-| GET | `/snapshot?network=testnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
-| GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
-| GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
-| GET | `/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
-| GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
-| GET | `/pools` | Active AMM pools being watched |
-| GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
-| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
-| GET | `/pairs` | Watched trading pairs |
-| POST | `/pairs` | Add a new trading pair (Admin only) |
-| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
-| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
-| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
-| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
-| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
-| GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
-| GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
-| GET | `/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
-| GET | `/dispersion/:assetA/:assetB` | Get venue price dispersion and outlier attribution for a pair |
-| GET | `/dispersion` | List cross-venue dispersion across watched pairs |
-| GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
-| GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
-| GET | `/movers` | Get biggest gainers, biggest losers, and volume movers |
-| GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
-| GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
-| GET | `/correlation` | Compute price correlation matrix across a basket of assets over a window |
-| GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
-| GET | `/discovery/search` | Natural language search with ranking and quality evaluation for discoverable resources |
-| POST | `/webhooks` | Subscribe to a price-threshold webhook |
-| DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
-| GET | `/usage` | Get usage and quota for the calling API key (alias for /usage/me) |
-| GET | `/supported` | Payment kinds and extensions this facilitator supports |
-| POST | `/verify` | Verify an x402 payment payload |
-| POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
-| GET | `/rates` | Query latest lending and borrow rates across pools |
-| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
+| GET | `/v1/venues/registry` | List registered venues and their network liveness |
+| GET | `/v1/venues` | Venue Share of Volume |
+| GET | `/v1/live` | Liveness probe |
+| GET | `/v1/tvl` | Total Value Locked across Stellar DeFi venues |
+| GET | `/v1/ready` | Readiness probe |
+| GET | `/v1/status` | Get API status and indexer state |
+| GET | `/v1/snapshot` | Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness) |
+| GET | `/v1/price/:assetA/:assetB` | Get aggregated price for a pair |
+| GET | `/v1/price/:assetA/:assetB/route` | Get best swap route for a pair and amount |
+| GET | `/v1/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
+| GET | `/v1/price/:assetA/:assetB/history` | Get price history buckets |
+| GET | `/v1/pools` | Get AMM liquidity pool reserves and spot prices |
+| GET | `/v1/candles/:assetA/:assetB` | Get OHLCV candle data |
+| GET | `/v1/prices/history` | Get historical 1-minute price snapshots |
+| GET | `/v1/pairs` | List all active trading pairs |
+| POST | `/v1/pairs` | Add a new trading pair (Admin only) |
+| GET | `/v1/price/:assetA/:assetB/depth` | Get order-book depth and execution slippage for a pair |
+| GET | `/v1/book/:assetA/:assetB` | Get the aggregated SDEX and AMM price ladder for a pair |
+| GET | `/v1/impact/:assetA/:assetB` | Get an adaptive slippage impact curve for a pair |
+| GET | `/v1/price/twap/:assetA/:assetB` | Get a manipulation-resistant time-weighted average price |
+| GET | `/v1/price/vwap/:assetA/:assetB` | Get a volume-weighted average price |
+| GET | `/v1/volumes/:asset` | Get cross-venue traded volume for an asset |
+| GET | `/v1/spreads/:asset` | Get the tightest per-venue bid/ask spread for an asset |
+| GET | `/v1/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
+| GET | `/v1/dispersion/:assetA/:assetB` | Get venue price dispersion and outlier attribution for a pair |
+| GET | `/v1/dispersion` | List cross-venue dispersion across watched pairs |
+| GET | `/v1/compare/:asset` | Compare Lens prices with every configured external oracle |
+| GET | `/v1/screener` | Screen pairs by volume, change, liquidity and price |
+| GET | `/v1/movers` | Get biggest gainers, biggest losers, and volume movers |
+| GET | `/v1/benchmark/:asset` | Get peg-deviation statistics for an asset against a target |
+| GET | `/v1/basket` | Compute the weighted price of a basket of assets |
+| GET | `/v1/correlation` | Compute price correlation matrix across a basket of assets over a window |
+| GET | `/v1/discovery/resources` | Browse the x402 Bazaar catalog of discoverable resources |
+| GET | `/v1/discovery/search` | Natural language search with ranking and quality evaluation for discoverable resources |
+| POST | `/v1/webhooks` | Subscribe to a price-threshold webhook |
+| DELETE | `/v1/webhooks/:id` | Delete a webhook subscription |
+| GET | `/v1/usage/me` | Get usage and quota for the calling API key |
+| GET | `/v1/usage` | Get usage and quota for the calling API key (alias for /usage/me) |
+| GET | `/v1/supported` | List the payment kinds and extensions this facilitator supports |
+| POST | `/v1/verify` | Verify an x402 payment payload |
+| POST | `/v1/settle` | Settle an x402 payment (idempotent) |
+| GET | `/v1/graphql` | Execute a GraphQL query over HTTP GET |
+| POST | `/v1/graphql` | Execute a GraphQL query, mutation or subscription handshake |
+| GET | `/v1/rates` | Query latest lending and borrow rates across pools |
 <!-- ENDPOINTS:END -->
+
+The table above is generated from [`openapi.yaml`](openapi.yaml) by `npm run openapi:gen`;
+edit the spec rather than the table. CI runs `npm run readme:check` and fails when
+the committed table differs from a fresh generation.
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
@@ -939,6 +944,15 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
+## Numeric Precision & Serialization
+
+Lens enforces strict arbitrary-precision numeric aggregation across SQL queries to eliminate floating-point representation artifacts and order-dependent rounding errors:
+
+- **Database Precision**: Declared in `prisma/schema.prisma` as `Decimal(36, 18)` for prices and `Decimal(36, 7)` for volumes (matching Stellar 7-decimal stroop precision).
+- **Exact Aggregations**: All intermediate SQL aggregations (`SUM`, `array_agg`, `MAX`, `MIN`) are computed in PostgreSQL using exact `numeric` arithmetic without `::float` casts inside aggregate expressions.
+- **Edge Serialization**: Values are cast once at the serialization boundary to documented precision:
+  - Prices: up to 18 decimal places (`PRICE_DECIMAL_PLACES = 18`).
+  - Volumes: up to 7 decimal places (`VOLUME_DECIMAL_PLACES = 7`).
 
 ## Rate Limiting & 429 Handling
 

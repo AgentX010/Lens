@@ -70,6 +70,8 @@ describe('GET /pools', () => {
     expect(res.json().pools).toEqual([
       { pool_id: 'C1', asset_a: 'XLM', asset_b: 'USDC', reserve_a: 10, reserve_b: 20, spot_price: 2, fee_bp: 30, timestamp: old.toISOString() },
     ])
+    expect(res.json().nextCursor).toBeNull()
+    expect(res.json().hasMore).toBe(false)
     await app.close()
   })
 

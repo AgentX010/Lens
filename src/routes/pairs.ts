@@ -2,6 +2,14 @@ import type { FastifyInstance } from 'fastify'
 import { getActivePairs, parseAssetStr, makePairKey, registerPair, persistPair, hasPair } from '../pairsRegistry'
 import { pgPool } from '../db'
 import { activeNetwork } from '../config'
+import {
+  PAIRS_DEFAULT_LIMIT,
+  PAIRS_MAX_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  parseLimit,
+  slicePage,
+} from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { apiError } from '../errors'
 import {
@@ -14,7 +22,7 @@ import {
 } from '../pagination'
 
 export async function registerPairsRoutes(app: FastifyInstance) {
-  // GET /pairs — list all active pairs with latest price metadata
+  // GET /pairs?cursor=&limit= — list active pairs with latest price metadata
   //
   // One index probe per watched pair on (network, pair_key, timestamp DESC):
   // `ORDER BY timestamp DESC LIMIT 1` reads a single index entry, so the cost is
