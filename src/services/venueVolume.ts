@@ -1,6 +1,6 @@
 import { pgPool } from '../db'
 import { getEnabledNetworks } from '../network/enabledNetworks'
-import { activeNetwork, type NetworkName } from '../config'
+import { activeNetwork, getNetworkConfig, type NetworkName } from '../config'
 
 const WINDOW_HOURS = {
   '24h': 24,
@@ -20,6 +20,7 @@ export interface VenueVolumeEntry {
   periodOverPeriodPctChange: number
   lastUpdated: string | null
   ageSeconds: number | null
+  enabled: boolean
 }
 
 export interface VenueVolumeResponse {
@@ -89,6 +90,29 @@ export async function calculateVenueVolumeShare(
   // Get all venue sources from the registry
   const { venueAdapters } = await import('../ingest/venues')
   const venueSources = [...new Set(venueAdapters.map(a => a.source))]
+  const enabledBySource = new Map<string, boolean>()
+  for (const a of venueAdapters) {
+    enabledBySource.set(a.source, a.isEnabled(network))
+  }
+
+  // Only include sources whose config block exists for this network, so a
+  // missing config key (as in tests) excludes the venue rather than throwing.
+  // Sources that are always-on (SDEX/AMM return true without a config block)
+  // are retained via the enabled check.
+  const configuredSources = venueSources.filter(source => {
+    const a = venueAdapters.find(ad => ad.source === source)
+    if (!a) return false
+    const enabled = a.isEnabled(network)
+    if (enabled) return true
+    const cfg = getNetworkConfig(network) as any
+    const key = source === 'soroswap_amm' ? 'soroswap'
+      : source === 'aquarius_amm' ? 'aquarius'
+      : source === 'defindex_vault' ? 'defindex'
+      : source === 'phoenix_amm' ? 'phoenix'
+      : source === 'blend' ? 'blend'
+      : source
+    return cfg[key] !== undefined
+  })
 
   // Query volume by venue for the requested window
   const currentQuery = `
@@ -154,7 +178,7 @@ export async function calculateVenueVolumeShare(
   }
 
   // Process all known venue sources from the registry
-  for (const source of venueSources) {
+  for (const source of configuredSources) {
     const row = currentRowsMap.get(source)
     const baseVolume = row?.base_volume || 0
     const counterVolume = row?.counter_volume || 0
@@ -188,6 +212,7 @@ export async function calculateVenueVolumeShare(
       periodOverPeriodPctChange,
       lastUpdated: lastSeen,
       ageSeconds,
+      enabled: enabledBySource.get(source) ?? false,
     })
   }
 

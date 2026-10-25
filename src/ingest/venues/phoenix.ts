@@ -535,7 +535,7 @@ export const phoenixAdapter: VenueAdapter<PhoenixPool, PhoenixReserves> = {
   classification: 'primary',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).phoenix.enabled
+    return getNetworkConfig(network).phoenix?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {

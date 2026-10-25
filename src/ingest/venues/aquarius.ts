@@ -131,7 +131,7 @@ export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   description: 'Aquarius AMM liquidity pools',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).aquarius.enabled
+    return getNetworkConfig(network).aquarius?.enabled ?? false
   },
 
   getPollIntervalMs(_network: NetworkName): number {

@@ -572,7 +572,7 @@ export const blendAdapter: VenueAdapter<BlendPoolData[], BlendReserveEntry[]> = 
   classification: 'primary',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).blend.enabled
+    return getNetworkConfig(network).blend?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {

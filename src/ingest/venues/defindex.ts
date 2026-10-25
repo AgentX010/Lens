@@ -423,7 +423,7 @@ export const defindexAdapter: VenueAdapter<string, DeFindexVaultSnapshot> = {
   classification: 'aggregator',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).defindex.enabled
+    return getNetworkConfig(network).defindex?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {

@@ -483,7 +483,7 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
   description: 'Soroswap constant-product automated market maker on Soroban',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).soroswap.enabled
+    return getNetworkConfig(network).soroswap?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {
