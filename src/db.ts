@@ -226,7 +226,7 @@ export async function upsertPricePoints(points: {
         timestamp,
         observedAt,
         sourceTime,
-        eventId: p.eventId || synthesizeEventId(network, { ...p, timestamp }),
+        eventId: p.eventId || synthesizeEventId(network, { ...p, timestamp: p.timestamp }),
       }
     }),
     skipDuplicates: true,
@@ -240,6 +240,12 @@ export async function upsertPricePoints(points: {
  * pool, ledger, observation timestamp and amounts — never a clock read or a
  * random value. Re-submitting the same batch re-derives the same key, so the
  * unique index absorbs it.
+ *
+ * If a row carries no natural eventId and no timestamp (#620), the key is
+ * synthesized strictly from the remaining content fields (network, source,
+ * pairKey, poolId, ledger, price, baseVolume, counterVolume) with an empty
+ * timestamp slot, NEVER from a wall-clock fallback. This ensures replays of
+ * rows without temporal anchors remain deterministic and deduplicate correctly.
  *
  * The timestamp used is the one the venue attached to the observation (a
  * trade's ledger close time, a snapshot's poll time), which is part of the
@@ -257,7 +263,7 @@ export function synthesizeEventId(
   p: {
     source: string; pairKey: string; poolId?: string
     price: number; baseVolume: number; counterVolume: number
-    ledger: number; timestamp: Date
+    ledger: number; timestamp?: Date
   },
 ): string {
   const content = [
@@ -266,7 +272,7 @@ export function synthesizeEventId(
     p.pairKey,
     p.poolId ?? '',
     String(p.ledger),
-    p.timestamp.toISOString(),
+    p.timestamp ? p.timestamp.toISOString() : '',
     String(p.price),
     String(p.baseVolume),
     String(p.counterVolume),
