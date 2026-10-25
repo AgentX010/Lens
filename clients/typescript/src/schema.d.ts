@@ -219,7 +219,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get AMM liquidity pool reserves and spot prices */
+        /**
+         * Get AMM liquidity pool reserves and spot prices
+         * @description Latest snapshot per pool for one network. Paginated with the shared keyset convention: ordered by pool_id ascending, default limit 50, maximum 200.
+         */
         get: operations["getPools"];
         put?: never;
         post?: never;
@@ -236,7 +239,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get OHLCV candle data */
+        /**
+         * Get OHLCV candle data
+         * @description OHLCV candles for a pair. Paginated with the shared keyset convention: ordered by bucket start time ascending, default limit 500, maximum 5000.
+         */
         get: operations["getCandles"];
         put?: never;
         post?: never;
@@ -255,7 +261,7 @@ export interface paths {
         };
         /**
          * Get historical 1-minute price snapshots
-         * @description Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets. Snapshots are retained for ~30 days. Gated by x402 (matches the /price prefix).
+         * @description Returns minute-resolution price snapshots for a pair over [from, to], optionally aggregated into 5m or 1h buckets. Snapshots are retained for ~30 days. Paginated with the shared keyset convention: ordered by bucket start time ascending, default limit 1000, maximum 10000 points. With format=csv the pagination envelope travels in the X-Next-Cursor and X-Has-More response headers; with format=json it is in the body. Gated by x402 (matches the /price prefix).
          */
         get: operations["getPriceSnapshots"];
         put?: never;
@@ -273,7 +279,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List all active trading pairs */
+        /**
+         * List all active trading pairs
+         * @description Active trading pairs with their latest price metadata. Paginated with the shared keyset convention: ordered by pairKey ascending, default limit 50, maximum 200.
+         */
         get: operations["listPairs"];
         put?: never;
         /** Add a new trading pair (Admin only) */
@@ -1659,6 +1668,8 @@ export interface components {
         DecimalFormatHeader: "number" | "string";
         /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
         NetworkQuery: "testnet" | "mainnet";
+        /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+        CursorQuery: string;
     };
     requestBodies: never;
     headers: {
@@ -2103,11 +2114,12 @@ export interface operations {
             query?: {
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+                cursor?: components["parameters"]["CursorQuery"];
+                /** @description Page size. Out-of-range values are clamped into [1, 200]. */
+                limit?: number;
             };
-            header?: {
-                /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */
-                "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2121,7 +2133,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        pools?: {
+                        pools: {
                             pool_id?: string;
                             asset_a?: string;
                             asset_b?: string;
@@ -2132,8 +2144,17 @@ export interface operations {
                             /** Format: date-time */
                             timestamp?: string;
                         }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
                     };
                 };
+            };
+            /** @description Invalid limit or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             402: components["responses"]["PaymentRequired"];
             429: components["responses"]["TooManyRequests"];
@@ -2147,6 +2168,10 @@ export interface operations {
                 from?: string;
                 /** @description End of the time window (exclusive). Together with `from` this defines a half-open interval [from, to): samples whose timestamp is exactly `to` are excluded, samples whose timestamp is exactly `from` are included. This means two adjacent windows [T0, T1) and [T1, T2) share no boundary — a sample landing exactly on T1 appears in exactly one of the two windows. */
                 to?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+                cursor?: components["parameters"]["CursorQuery"];
+                /** @description Page size. Out-of-range values are clamped into [1, 5000]. */
+                limit?: number;
             };
             header?: never;
             path: {
@@ -2165,11 +2190,13 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        pairKey?: string;
-                        interval?: string;
-                        from?: string;
-                        to?: string;
-                        candles?: {
+                        pairKey: string;
+                        interval: string;
+                        /** Format: date-time */
+                        from: string;
+                        /** Format: date-time */
+                        to: string;
+                        candles: {
                             /** Format: date-time */
                             time?: string;
                             open?: number;
@@ -2178,6 +2205,8 @@ export interface operations {
                             close?: number;
                             volume?: number;
                         }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
                     };
                 };
             };
@@ -2204,6 +2233,10 @@ export interface operations {
                 to?: string;
                 /** @description Response encoding. `csv` returns a text/csv body holding a `ts,price,volume` table (RFC 4180 quoting, LF line endings, one trailing newline); `json` is the default. */
                 format?: "json" | "csv";
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+                cursor?: components["parameters"]["CursorQuery"];
+                /** @description Page size (number of buckets). Out-of-range values are clamped into [1, 10000]. */
+                limit?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
             };
@@ -2213,30 +2246,36 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Historical price snapshots */
+            /** @description Historical price snapshots. When more buckets exist beyond this page, the response carries X-Next-Cursor (pass it back as ?cursor=) and X-Has-More: true. */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    /** @description Opaque cursor for the next page; absent on the last page. */
+                    "X-Next-Cursor"?: string;
+                    /** @description 'true' when another page exists, 'false' otherwise. */
+                    "X-Has-More"?: "true" | "false";
                     [name: string]: unknown;
                 };
                 content: {
                     "text/csv": string;
                     "application/json": {
-                        pair?: string;
+                        pair: string;
                         /** @enum {string} */
-                        network?: "testnet" | "mainnet";
-                        interval?: string;
+                        network: "testnet" | "mainnet";
+                        interval: string;
                         /** Format: date-time */
-                        from?: string;
+                        from: string;
                         /** Format: date-time */
-                        to?: string;
-                        count?: number;
-                        points?: {
+                        to: string;
+                        /** @description Number of points in this page (not the total across pages). */
+                        count: number;
+                        points: {
                             /** Format: date-time */
                             ts?: string;
                             price?: number;
                             volume?: number;
                         }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
                     };
                 };
             };
@@ -2256,6 +2295,10 @@ export interface operations {
             query?: {
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+                cursor?: components["parameters"]["CursorQuery"];
+                /** @description Page size. Out-of-range values are clamped into [1, 200]. */
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -2271,7 +2314,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        pairs?: {
+                        pairs: {
                             pairKey?: string;
                             assetA?: components["schemas"]["Asset"];
                             assetB?: components["schemas"]["Asset"];
@@ -2279,8 +2322,17 @@ export interface operations {
                             /** Format: date-time */
                             lastUpdated?: string | null;
                         }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
                     };
                 };
+            };
+            /** @description Invalid limit or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             429: components["responses"]["TooManyRequests"];
         };
@@ -2871,8 +2923,9 @@ export interface operations {
                 liquidity?: number;
                 sortBy?: "volume" | "change_24h" | "price" | "liquidity";
                 order?: "asc" | "desc";
-                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
-                cursor?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. Every list route uses the same keyset-cursor convention: pass it unchanged to fetch the next page; rows inserted while paging never shift a page boundary. An invalid cursor is rejected with 400. */
+                cursor?: components["parameters"]["CursorQuery"];
+                /** @description Page size. Out-of-range values are clamped into [1, 100]. */
                 limit?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
