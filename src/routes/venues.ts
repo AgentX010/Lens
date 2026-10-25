@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { venueAdapters } from '../ingest/venues'
@@ -62,7 +62,7 @@ export async function registerVenueRoutes(app: FastifyInstance) {
   })
 
   // GET /venues?window=24h|7d|30d (default 24h) — venue share of volume
-  app.get('/venues', { config: { scope: 'read:venues' } }, async (req, reply) => {
+  app.get('/venues', { config: { scope: 'read:venues' } }, async (req: FastifyRequest<{ Querystring: { window?: string } }>, reply: FastifyReply) => {
     const network = (req.network ?? activeNetwork) as NetworkName
     const window = (req.query.window ?? '24h') as string
     if (!['24h', '7d', '30d'].includes(window)) {
