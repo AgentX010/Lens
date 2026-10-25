@@ -884,6 +884,58 @@ export const snapshotResponseSchema = {
   },
 } as const
 
+export const venuesResponseSchema = {
+  type: 'object',
+  required: ['network', 'window', 'venues', 'excludedVenues', 'totalVolume', 'marketShares', 'periodOverPeriodPctChange'],
+  additionalProperties: false,
+  properties: {
+    network: { type: 'string', enum: ['testnet', 'mainnet'] },
+    window: { type: 'string', enum: ['24h', '7d', '30d'] },
+    venues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['venue', 'baseVolume', 'counterVolume', 'samples', 'pairs', 'marketShare', 'periodOverPeriodPctChange', 'lastUpdated', 'ageSeconds'],
+        additionalProperties: false,
+        properties: {
+          venue: { type: 'string' },
+          baseVolume: { type: ['number', 'string'] },
+          counterVolume: { type: ['number', 'string'] },
+          samples: { type: 'integer' },
+          pairs: { type: 'integer' },
+          marketShare: { type: 'number' },
+          periodOverPeriodPctChange: { type: 'number' },
+          lastUpdated: { type: ['string', 'null'] },
+          ageSeconds: { type: ['integer', 'null'] },
+        },
+      },
+    },
+    excludedVenues: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    totalVolume: {
+      type: 'object',
+      required: ['value', 'unit', 'reason'],
+      additionalProperties: false,
+      properties: {
+        value: { type: ['number', 'null'] },
+        unit: { type: ['object', 'null'], properties: { code: { type: 'string' }, issuer: { type: ['string', 'null'] } } },
+        reason: { type: ['string', 'null'] },
+      },
+    },
+    marketShares: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        total: { type: 'number' },
+        variance: { type: 'number' },
+      },
+    },
+    periodOverPeriodPctChange: { type: 'number' },
+  },
+} as const
+
 /**
  * Install response-shape validation on a Fastify instance.
  *

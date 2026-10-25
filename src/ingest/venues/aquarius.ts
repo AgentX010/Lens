@@ -98,6 +98,7 @@ export function deriveAquariusPricePoints(
     const r1 = parseFloat(r1Str)
     if (r0 <= 0 || r1 <= 0) return []
 
+    const now = new Date()
     return [
       {
         assetA: pair.assetA.code,
@@ -109,7 +110,9 @@ export function deriveAquariusPricePoints(
         baseVolume: 0,
         counterVolume: 0,
         ledger: 0,
-        timestamp: new Date(),
+        observedAt: now,
+        sourceTime: null,
+        timestamp: now,
       },
     ]
   })
@@ -155,13 +158,16 @@ export async function ingestAquariusPair(
 export const aquariusAdapter: VenueAdapter<AquariusPool[], AquariusPool[]> = {
   name: 'Aquarius',
   kind: 'amm',
+  // AQUARIUS_SOURCE is the same literal; the constant keeps the adapter and
+  // the failure-tracking calls below from drifting apart.
   source: AQUARIUS_SOURCE,
+  sourceTimeCapability: { status: 'unavailable' },
   classification: 'aggregator',
   type: 'Liquidity Pool',
   description: 'Aquarius AMM liquidity pools',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).aquarius.enabled
+    return getNetworkConfig(network).aquarius?.enabled ?? false
   },
 
   getPollIntervalMs(_network: NetworkName): number {

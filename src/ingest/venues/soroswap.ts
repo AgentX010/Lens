@@ -367,6 +367,7 @@ export async function ingestPool(
     // separated from it.
     if (signal?.aborted) return
 
+    const now = new Date()
     await upsertPricePoints(
       [
         {
@@ -379,7 +380,9 @@ export async function ingestPool(
           baseVolume: 0,
           counterVolume: 0,
           ledger: 0,
-          timestamp: new Date(),
+          observedAt: now,
+          sourceTime: null,
+          timestamp: now,
           // #237: Soroswap snapshots are read via RPC simulation, so there is
           // no trade id to key on. The reserves ARE the pool state — identical
           // reserves yield the identical price, so deriving the id from them
@@ -489,12 +492,13 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
   name: 'Soroswap',
   kind: 'amm',
   source: 'soroswap_amm',
+  sourceTimeCapability: { status: 'unavailable' },
   classification: 'primary',
   type: 'AMM DEX',
   description: 'Soroswap constant-product automated market maker on Soroban',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).soroswap.enabled
+    return getNetworkConfig(network).soroswap?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {
@@ -547,6 +551,7 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
       return []
     }
 
+    const now = new Date()
     return [
       {
         assetA: pair.assetA.code,
@@ -558,7 +563,9 @@ export const soroswapAdapter: VenueAdapter<PoolEntry, [bigint, bigint]> = {
         baseVolume: 0,
         counterVolume: 0,
         ledger: 0,
-        timestamp: new Date(),
+        observedAt: now,
+        sourceTime: null,
+        timestamp: now,
         // Same content-derived key as ingestPool above (#237): reserves, not
         // the clock, so the adapter path and the legacy path agree on identity.
         eventId: `soroswap-${target.poolAddress}-${reserveA}-${reserveB}`,
