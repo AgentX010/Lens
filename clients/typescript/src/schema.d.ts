@@ -439,6 +439,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dispersion/{assetA}/{assetB}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get venue price dispersion and outlier attribution for a pair
+         * @description Returns cross-venue price dispersion history and outlier attribution for a pair over time, including median, max absolute percentage deviation, spread in basis points, and outlying venue.
+         */
+        get: operations["getPairDispersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dispersion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List cross-venue dispersion across watched pairs
+         * @description Queries recent cross-venue dispersion reconciliation records across all pairs or filtered by a specific pair.
+         */
+        get: operations["listDispersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/compare/{asset}": {
         parameters: {
             query?: never;
@@ -2674,6 +2714,115 @@ export interface operations {
             };
             429: components["responses"]["TooManyRequests"];
             /** @description Rate lookup failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getPairDispersion: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+                /** @description Start timestamp (ISO-8601) */
+                from?: string;
+                /** @description End timestamp (ISO-8601) */
+                to?: string;
+                /** @description Max number of history records to return */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description Base asset code or CODE:ISSUER
+                 * @example XLM
+                 */
+                assetA: string;
+                /**
+                 * @description Quote asset code or CODE:ISSUER
+                 * @example USDC
+                 */
+                assetB: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispersion history and latest outlier attribution */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        pairKey?: string;
+                        network?: string;
+                        latest?: Record<string, never> | null;
+                        count?: number;
+                        history?: Record<string, never>[];
+                    };
+                };
+            };
+            /** @description Invalid request parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
+            /** @description Dispersion query failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDispersion: {
+        parameters: {
+            query?: {
+                /** @description Optional pair key filter (e.g. XLM/USDC) */
+                pair?: string;
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+                from?: string;
+                to?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of dispersion reconciliation records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        network?: string;
+                        pair?: string | null;
+                        count?: number;
+                        history?: Record<string, never>[];
+                    };
+                };
+            };
+            /** @description Invalid request parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
+            /** @description Dispersion query failed */
             500: {
                 headers: {
                     [name: string]: unknown;
