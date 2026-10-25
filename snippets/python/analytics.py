@@ -13,26 +13,54 @@ def require_env(name):
 
 BASE_URL = require_env("LENS_BASE_URL")
 
-# getVolumes: GET /volumes/XLM
-res = requests.get(BASE_URL + "/volumes/XLM", params=[["network","testnet"]], headers={}, timeout=30)
+# getTvl: GET /v1/tvl
+res = requests.get(BASE_URL + "/v1/tvl", params=[["network","testnet"]], headers={}, timeout=30)
+print("getTvl", res.status_code, res.json())
+
+# getVolumes: GET /v1/volumes/XLM
+res = requests.get(BASE_URL + "/v1/volumes/XLM", params=[["network","testnet"]], headers={}, timeout=30)
 print("getVolumes", res.status_code, res.json())
 
-# getSpreads: GET /spreads/XLM
-res = requests.get(BASE_URL + "/spreads/XLM", params=[["network","testnet"]], headers={}, timeout=30)
+# getSpreads: GET /v1/spreads/XLM
+res = requests.get(BASE_URL + "/v1/spreads/XLM", params=[["network","testnet"]], headers={}, timeout=30)
 print("getSpreads", res.status_code, res.json())
 
-# compareAsset: GET /compare/XLM
-res = requests.get(BASE_URL + "/compare/XLM", params=[["network","testnet"]], headers={}, timeout=30)
+# getLendingRates: GET /v1/rates/USDC
+res = requests.get(BASE_URL + "/v1/rates/USDC", params=[["network","testnet"]], headers={}, timeout=30)
+print("getLendingRates", res.status_code, res.json())
+
+# getPairDispersion: GET /v1/dispersion/XLM/USDC
+res = requests.get(BASE_URL + "/v1/dispersion/XLM/USDC", params=[["network","testnet"]], headers={}, timeout=30)
+print("getPairDispersion", res.status_code, res.json())
+
+# listDispersion: GET /v1/dispersion
+res = requests.get(BASE_URL + "/v1/dispersion", params=[["network","testnet"]], headers={}, timeout=30)
+print("listDispersion", res.status_code, res.json())
+
+# compareAsset: GET /v1/compare/XLM
+res = requests.get(BASE_URL + "/v1/compare/XLM", params=[["network","testnet"]], headers={}, timeout=30)
 print("compareAsset", res.status_code, res.json())
 
-# screenPairs: GET /screener
-res = requests.get(BASE_URL + "/screener", params=[["network","testnet"]], headers={}, timeout=30)
+# screenPairs: GET /v1/screener
+res = requests.get(BASE_URL + "/v1/screener", params=[["network","testnet"]], headers={}, timeout=30)
 print("screenPairs", res.status_code, res.json())
 
-# getBenchmark: GET /benchmark/USDC
-res = requests.get(BASE_URL + "/benchmark/USDC", params=[], headers={}, timeout=30)
+# getMovers: GET /v1/movers
+res = requests.get(BASE_URL + "/v1/movers", params=[["network","testnet"]], headers={}, timeout=30)
+print("getMovers", res.status_code, res.json())
+
+# getBenchmark: GET /v1/benchmark/USDC
+res = requests.get(BASE_URL + "/v1/benchmark/USDC", params=[], headers={}, timeout=30)
 print("getBenchmark", res.status_code, res.json())
 
-# getBasket: GET /basket
-res = requests.get(BASE_URL + "/basket", params=[["asset","XLM"],["asset","USDC"],["weight","0.6"],["weight","0.4"]], headers={}, timeout=30)
+# getBasket: GET /v1/basket
+res = requests.get(BASE_URL + "/v1/basket", params=[["asset","XLM"],["asset","USDC"],["weight","0.6"],["weight","0.4"]], headers={}, timeout=30)
 print("getBasket", res.status_code, res.json())
+
+# getCorrelation: GET /v1/correlation
+res = requests.get(BASE_URL + "/v1/correlation", params=[["assets","XLM,USDC"],["network","testnet"]], headers={}, timeout=30)
+print("getCorrelation", res.status_code, res.json())
+
+# getLendingRates: GET /v1/rates
+res = requests.get(BASE_URL + "/v1/rates", params=[], headers={}, timeout=30)
+print("getLendingRates", res.status_code, res.json())

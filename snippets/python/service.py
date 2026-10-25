@@ -14,26 +14,38 @@ def require_env(name):
 BASE_URL = require_env("LENS_BASE_URL")
 API_KEY = require_env("LENS_API_KEY")
 
-# getVenueRegistry: GET /venues/registry
-res = requests.get(BASE_URL + "/venues/registry", params=[["network","testnet"]], headers={}, timeout=30)
+# getVenueRegistry: GET /v1/venues/registry
+res = requests.get(BASE_URL + "/v1/venues/registry", params=[["network","testnet"]], headers={}, timeout=30)
 print("getVenueRegistry", res.status_code, res.json())
 
-# getStatus: GET /status
-res = requests.get(BASE_URL + "/status", params=[["network","testnet"]], headers={}, timeout=30)
+# getVenueVolumeShare: GET /v1/venues
+res = requests.get(BASE_URL + "/v1/venues", params=[["network","testnet"]], headers={}, timeout=30)
+print("getVenueVolumeShare", res.status_code, res.json())
+
+# getStatus: GET /v1/status
+res = requests.get(BASE_URL + "/v1/status", params=[["network","testnet"]], headers={}, timeout=30)
 print("getStatus", res.status_code, res.json())
 
-# getSnapshot: GET /snapshot
-res = requests.get(BASE_URL + "/snapshot", params=[["network","testnet"]], headers={}, timeout=30)
+# getSnapshot: GET /v1/snapshot
+res = requests.get(BASE_URL + "/v1/snapshot", params=[["network","testnet"]], headers={}, timeout=30)
 print("getSnapshot", res.status_code, res.json())
 
-# listDiscoveryResources: GET /discovery/resources
-res = requests.get(BASE_URL + "/discovery/resources", params=[], headers={}, timeout=30)
+# listDiscoveryResources: GET /v1/discovery/resources
+res = requests.get(BASE_URL + "/v1/discovery/resources", params=[], headers={}, timeout=30)
 print("listDiscoveryResources", res.status_code, res.json())
 
-# getMyUsage: GET /usage/me
-res = requests.get(BASE_URL + "/usage/me", params=[], headers={"Authorization": "Bearer " + API_KEY}, timeout=30)
+# searchDiscoveryResources: GET /v1/discovery/search
+res = requests.get(BASE_URL + "/v1/discovery/search", params=[["q","USDC"]], headers={}, timeout=30)
+print("searchDiscoveryResources", res.status_code, res.json())
+
+# getMyUsage: GET /v1/usage/me
+res = requests.get(BASE_URL + "/v1/usage/me", params=[], headers={"Authorization": "Bearer " + API_KEY}, timeout=30)
 print("getMyUsage", res.status_code, res.json())
 
-# getSupported: GET /supported
-res = requests.get(BASE_URL + "/supported", params=[], headers={}, timeout=30)
+# getCallerUsage: GET /v1/usage
+res = requests.get(BASE_URL + "/v1/usage", params=[], headers={"Authorization": "Bearer " + API_KEY}, timeout=30)
+print("getCallerUsage", res.status_code, res.json())
+
+# getSupported: GET /v1/supported
+res = requests.get(BASE_URL + "/v1/supported", params=[], headers={}, timeout=30)
 print("getSupported", res.status_code, res.json())

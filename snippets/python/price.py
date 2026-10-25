@@ -15,46 +15,54 @@ BASE_URL = require_env("LENS_BASE_URL")
 # Base64 X-PAYMENT header produced by an x402 signer (see @x402/stellar).
 PAYMENT = require_env("LENS_X_PAYMENT")
 
-# getPrice: GET /price/XLM/USDC (x402-gated)
-res = requests.get(BASE_URL + "/price/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getPrice: GET /v1/price/XLM/USDC (x402-gated)
+res = requests.get(BASE_URL + "/v1/price/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getPrice", res.status_code, res.json())
 
-# getBestRoute: GET /price/XLM/USDC/route (x402-gated)
-res = requests.get(BASE_URL + "/price/XLM/USDC/route", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getBestRoute: GET /v1/price/XLM/USDC/route (x402-gated)
+res = requests.get(BASE_URL + "/v1/price/XLM/USDC/route", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getBestRoute", res.status_code, res.json())
 
-# getPriceHistory: GET /price/XLM/USDC/history
-res = requests.get(BASE_URL + "/price/XLM/USDC/history", params=[["network","testnet"]], headers={}, timeout=30)
+# getFiatPrice: GET /v1/price/XLM/fiat
+res = requests.get(BASE_URL + "/v1/price/XLM/fiat", params=[["network","testnet"]], headers={}, timeout=30)
+print("getFiatPrice", res.status_code, res.json())
+
+# getPriceHistory: GET /v1/price/XLM/USDC/history
+res = requests.get(BASE_URL + "/v1/price/XLM/USDC/history", params=[["network","testnet"]], headers={}, timeout=30)
 print("getPriceHistory", res.status_code, res.json())
 
-# getPools: GET /pools (x402-gated)
-res = requests.get(BASE_URL + "/pools", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getPools: GET /v1/pools (x402-gated)
+res = requests.get(BASE_URL + "/v1/pools", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getPools", res.status_code, res.json())
 
-# getCandles: GET /candles/XLM/USDC (x402-gated)
-res = requests.get(BASE_URL + "/candles/XLM/USDC", params=[], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getCandles: GET /v1/candles/XLM/USDC (x402-gated)
+res = requests.get(BASE_URL + "/v1/candles/XLM/USDC", params=[], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getCandles", res.status_code, res.json())
 
-# getPriceSnapshots: GET /prices/history (x402-gated)
-res = requests.get(BASE_URL + "/prices/history", params=[["pair","XLM/USDC"],["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getPriceSnapshots: GET /v1/prices/history (x402-gated)
+res = requests.get(BASE_URL + "/v1/prices/history", params=[["pair","XLM/USDC"],["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getPriceSnapshots", res.status_code, res.json())
 
-# listPairs: GET /pairs
-res = requests.get(BASE_URL + "/pairs", params=[["network","testnet"]], headers={}, timeout=30)
+# listPairs: GET /v1/pairs
+res = requests.get(BASE_URL + "/v1/pairs", params=[["network","testnet"]], headers={}, timeout=30)
 print("listPairs", res.status_code, res.json())
 
-# getDepth: GET /price/XLM/USDC/depth (x402-gated)
-res = requests.get(BASE_URL + "/price/XLM/USDC/depth", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getDepth: GET /v1/price/XLM/USDC/depth (x402-gated)
+res = requests.get(BASE_URL + "/v1/price/XLM/USDC/depth", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getDepth", res.status_code, res.json())
 
-# getBook: GET /book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
-res = requests.get(BASE_URL + "/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", params=[["network","testnet"]], headers={}, timeout=30)
+# getBook: GET /v1/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+res = requests.get(BASE_URL + "/v1/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", params=[["network","testnet"]], headers={}, timeout=30)
 print("getBook", res.status_code, res.json())
 
-# getTwap: GET /price/twap/XLM/USDC (x402-gated)
-res = requests.get(BASE_URL + "/price/twap/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getImpact: GET /v1/impact/XLM/USDC (x402-gated)
+res = requests.get(BASE_URL + "/v1/impact/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+print("getImpact", res.status_code, res.json())
+
+# getTwap: GET /v1/price/twap/XLM/USDC (x402-gated)
+res = requests.get(BASE_URL + "/v1/price/twap/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getTwap", res.status_code, res.json())
 
-# getVwap: GET /price/vwap/XLM/USDC (x402-gated)
-res = requests.get(BASE_URL + "/price/vwap/XLM/USDC", params=[], headers={"X-PAYMENT": PAYMENT}, timeout=30)
+# getVwap: GET /v1/price/vwap/XLM/USDC (x402-gated)
+res = requests.get(BASE_URL + "/v1/price/vwap/XLM/USDC", params=[["network","testnet"]], headers={"X-PAYMENT": PAYMENT}, timeout=30)
 print("getVwap", res.status_code, res.json())

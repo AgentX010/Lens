@@ -18,98 +18,117 @@ const payFetch = wrapFetchWithPaymentFromConfig(fetch, {
   schemes: [{ network: 'stellar:*', client: new ExactStellarScheme(signer) }],
 })
 
-// getPrice: GET /price/XLM/USDC (x402-gated)
+// getPrice: GET /v1/price/XLM/USDC (x402-gated)
 {
-  const url = new URL("/price/XLM/USDC", BASE_URL)
+  const url = new URL("/v1/price/XLM/USDC", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getPrice", res.status, await res.json())
 }
 
-// getBestRoute: GET /price/XLM/USDC/route (x402-gated)
+// getBestRoute: GET /v1/price/XLM/USDC/route (x402-gated)
 {
-  const url = new URL("/price/XLM/USDC/route", BASE_URL)
+  const url = new URL("/v1/price/XLM/USDC/route", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getBestRoute", res.status, await res.json())
 }
 
-// getPriceHistory: GET /price/XLM/USDC/history
+// getFiatPrice: GET /v1/price/XLM/fiat
 {
-  const url = new URL("/price/XLM/USDC/history", BASE_URL)
+  const url = new URL("/v1/price/XLM/fiat", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getFiatPrice", res.status, await res.json())
+}
+
+// getPriceHistory: GET /v1/price/XLM/USDC/history
+{
+  const url = new URL("/v1/price/XLM/USDC/history", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getPriceHistory", res.status, await res.json())
 }
 
-// getPools: GET /pools (x402-gated)
+// getPools: GET /v1/pools (x402-gated)
 {
-  const url = new URL("/pools", BASE_URL)
+  const url = new URL("/v1/pools", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getPools", res.status, await res.json())
 }
 
-// getCandles: GET /candles/XLM/USDC (x402-gated)
+// getCandles: GET /v1/candles/XLM/USDC (x402-gated)
 {
-  const url = new URL("/candles/XLM/USDC", BASE_URL)
+  const url = new URL("/v1/candles/XLM/USDC", BASE_URL)
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getCandles", res.status, await res.json())
 }
 
-// getPriceSnapshots: GET /prices/history (x402-gated)
+// getPriceSnapshots: GET /v1/prices/history (x402-gated)
 {
-  const url = new URL("/prices/history", BASE_URL)
+  const url = new URL("/v1/prices/history", BASE_URL)
   url.search = new URLSearchParams([["pair","XLM/USDC"],["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getPriceSnapshots", res.status, await res.json())
 }
 
-// listPairs: GET /pairs
+// listPairs: GET /v1/pairs
 {
-  const url = new URL("/pairs", BASE_URL)
+  const url = new URL("/v1/pairs", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("listPairs", res.status, await res.json())
 }
 
-// getDepth: GET /price/XLM/USDC/depth (x402-gated)
+// getDepth: GET /v1/price/XLM/USDC/depth (x402-gated)
 {
-  const url = new URL("/price/XLM/USDC/depth", BASE_URL)
+  const url = new URL("/v1/price/XLM/USDC/depth", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getDepth", res.status, await res.json())
 }
 
-// getBook: GET /book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+// getBook: GET /v1/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
 {
-  const url = new URL("/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", BASE_URL)
+  const url = new URL("/v1/book/XLM/USDC%3AGBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getBook", res.status, await res.json())
 }
 
-// getTwap: GET /price/twap/XLM/USDC (x402-gated)
+// getImpact: GET /v1/impact/XLM/USDC (x402-gated)
 {
-  const url = new URL("/price/twap/XLM/USDC", BASE_URL)
+  const url = new URL("/v1/impact/XLM/USDC", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await payFetch(url, { headers })
+  console.log("getImpact", res.status, await res.json())
+}
+
+// getTwap: GET /v1/price/twap/XLM/USDC (x402-gated)
+{
+  const url = new URL("/v1/price/twap/XLM/USDC", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getTwap", res.status, await res.json())
 }
 
-// getVwap: GET /price/vwap/XLM/USDC (x402-gated)
+// getVwap: GET /v1/price/vwap/XLM/USDC (x402-gated)
 {
-  const url = new URL("/price/vwap/XLM/USDC", BASE_URL)
+  const url = new URL("/v1/price/vwap/XLM/USDC", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await payFetch(url, { headers })
   console.log("getVwap", res.status, await res.json())

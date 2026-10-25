@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { toBarePath } from '../src/openapi/coverage'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import YAML from 'js-yaml'
@@ -9,8 +10,16 @@ const SPEC_PATH = join(ROOT, 'openapi.yaml')
 // Route groups, matched by path prefix in order. Every GET route must match a
 // group or appear in SKIPPED, so a new route cannot be dropped silently.
 const GROUPS: { name: string; prefixes: string[] }[] = [
-  { name: 'price', prefixes: ['/price/', '/candles', '/book', '/prices/', '/pools', '/pairs'] },
-  { name: 'analytics', prefixes: ['/volumes', '/spreads', '/compare', '/screener', '/benchmark', '/basket'] },
+  // /impact sits with price: it answers what a trade of a given size costs,
+  // which is the same question /book and the depth routes answer.
+  { name: 'price', prefixes: ['/price/', '/candles', '/book', '/prices/', '/pools', '/pairs', '/impact'] },
+  {
+    name: 'analytics',
+    prefixes: [
+      '/volumes', '/spreads', '/compare', '/screener', '/benchmark', '/basket',
+      '/tvl', '/rates', '/dispersion', '/movers', '/correlation',
+    ],
+  },
   { name: 'service', prefixes: ['/status', '/supported', '/discovery', '/usage', '/venues', '/snapshot'] },
 ]
 
@@ -103,11 +112,16 @@ function collect(spec: Spec): Map<string, Built[]> {
   for (const [path, methods] of Object.entries(spec.paths)) {
     const get = methods.get
     if (!get) continue
-    if (path in SKIPPED) continue
-    const group = GROUPS.find((g) => g.prefixes.some((p) => path.startsWith(p)))
+    // Every documented path carries the /v1 prefix since 97c50bf. The groups
+    // and the skip list below are keyed on the canonical bare route, so match
+    // on that; the snippet itself still renders the versioned URL, which is
+    // the one callers should use.
+    const bare = toBarePath(path)
+    if (bare in SKIPPED) continue
+    const group = GROUPS.find((g) => g.prefixes.some((p) => bare.startsWith(p)))
     if (!group) {
       throw new Error(
-        `GET ${path} is not in a snippet group or SKIPPED in scripts/gen-snippets.ts`,
+        `GET ${bare} is not in a snippet group or SKIPPED in scripts/gen-snippets.ts`,
       )
     }
     byGroup.get(group.name)!.push(build(spec, path, get))

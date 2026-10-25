@@ -2011,7 +2011,9 @@ export interface operations {
                 "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
             };
             path: {
+                /** @example XLM */
                 assetA: string;
+                /** @example USDC */
                 assetB: string;
             };
             cookie?: never;
@@ -2079,7 +2081,9 @@ export interface operations {
                 "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
             };
             path: {
+                /** @example XLM */
                 assetA: string;
+                /** @example USDC */
                 assetB: string;
             };
             cookie?: never;
@@ -2178,7 +2182,9 @@ export interface operations {
             };
             header?: never;
             path: {
+                /** @example XLM */
                 assetA: string;
+                /** @example USDC */
                 assetB: string;
             };
             cookie?: never;
@@ -2352,7 +2358,7 @@ export interface operations {
                 "application/json": {
                     /** @example XLM */
                     assetA?: string;
-                    /** @example USDC:GBBD47... */
+                    /** @example USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5 */
                     assetB?: string;
                 };
             };
@@ -2560,7 +2566,9 @@ export interface operations {
                 "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
             };
             path: {
+                /** @example XLM */
                 assetA: string;
+                /** @example USDC */
                 assetB: string;
             };
             cookie?: never;
@@ -2611,7 +2619,9 @@ export interface operations {
                 "X-Decimal-Format"?: components["parameters"]["DecimalFormatHeader"];
             };
             path: {
+                /** @example XLM */
                 assetA: string;
+                /** @example USDC */
                 assetB: string;
             };
             cookie?: never;

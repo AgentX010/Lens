@@ -660,7 +660,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "XLM"
             }
           },
           {
@@ -2772,7 +2773,8 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "USDC"
             }
           },
           {

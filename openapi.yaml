@@ -488,6 +488,7 @@ paths:
           required: true
           schema:
             type: string
+            example: XLM
         - name: currency
           in: query
           required: false
@@ -1916,6 +1917,7 @@ paths:
           required: true
           schema:
             type: string
+            example: USDC
         - name: limit
           in: query
           required: false

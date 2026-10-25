@@ -9,55 +9,117 @@ function requireEnv(name: string): string {
 
 const BASE_URL = requireEnv('LENS_BASE_URL')
 
-// getVolumes: GET /volumes/XLM
+// getTvl: GET /v1/tvl
 {
-  const url = new URL("/volumes/XLM", BASE_URL)
+  const url = new URL("/v1/tvl", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getTvl", res.status, await res.json())
+}
+
+// getVolumes: GET /v1/volumes/XLM
+{
+  const url = new URL("/v1/volumes/XLM", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getVolumes", res.status, await res.json())
 }
 
-// getSpreads: GET /spreads/XLM
+// getSpreads: GET /v1/spreads/XLM
 {
-  const url = new URL("/spreads/XLM", BASE_URL)
+  const url = new URL("/v1/spreads/XLM", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getSpreads", res.status, await res.json())
 }
 
-// compareAsset: GET /compare/XLM
+// getLendingRates: GET /v1/rates/USDC
 {
-  const url = new URL("/compare/XLM", BASE_URL)
+  const url = new URL("/v1/rates/USDC", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getLendingRates", res.status, await res.json())
+}
+
+// getPairDispersion: GET /v1/dispersion/XLM/USDC
+{
+  const url = new URL("/v1/dispersion/XLM/USDC", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getPairDispersion", res.status, await res.json())
+}
+
+// listDispersion: GET /v1/dispersion
+{
+  const url = new URL("/v1/dispersion", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("listDispersion", res.status, await res.json())
+}
+
+// compareAsset: GET /v1/compare/XLM
+{
+  const url = new URL("/v1/compare/XLM", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("compareAsset", res.status, await res.json())
 }
 
-// screenPairs: GET /screener
+// screenPairs: GET /v1/screener
 {
-  const url = new URL("/screener", BASE_URL)
+  const url = new URL("/v1/screener", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("screenPairs", res.status, await res.json())
 }
 
-// getBenchmark: GET /benchmark/USDC
+// getMovers: GET /v1/movers
 {
-  const url = new URL("/benchmark/USDC", BASE_URL)
+  const url = new URL("/v1/movers", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getMovers", res.status, await res.json())
+}
+
+// getBenchmark: GET /v1/benchmark/USDC
+{
+  const url = new URL("/v1/benchmark/USDC", BASE_URL)
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getBenchmark", res.status, await res.json())
 }
 
-// getBasket: GET /basket
+// getBasket: GET /v1/basket
 {
-  const url = new URL("/basket", BASE_URL)
+  const url = new URL("/v1/basket", BASE_URL)
   url.search = new URLSearchParams([["asset","XLM"],["asset","USDC"],["weight","0.6"],["weight","0.4"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getBasket", res.status, await res.json())
+}
+
+// getCorrelation: GET /v1/correlation
+{
+  const url = new URL("/v1/correlation", BASE_URL)
+  url.search = new URLSearchParams([["assets","XLM,USDC"],["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getCorrelation", res.status, await res.json())
+}
+
+// getLendingRates: GET /v1/rates
+{
+  const url = new URL("/v1/rates", BASE_URL)
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getLendingRates", res.status, await res.json())
 }

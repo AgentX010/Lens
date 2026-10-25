@@ -9,52 +9,78 @@ function requireEnv(name: string): string {
 
 const BASE_URL = requireEnv('LENS_BASE_URL')
 
-// getVenueRegistry: GET /venues/registry
+// getVenueRegistry: GET /v1/venues/registry
 {
-  const url = new URL("/venues/registry", BASE_URL)
+  const url = new URL("/v1/venues/registry", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getVenueRegistry", res.status, await res.json())
 }
 
-// getStatus: GET /status
+// getVenueVolumeShare: GET /v1/venues
 {
-  const url = new URL("/status", BASE_URL)
+  const url = new URL("/v1/venues", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getVenueVolumeShare", res.status, await res.json())
+}
+
+// getStatus: GET /v1/status
+{
+  const url = new URL("/v1/status", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getStatus", res.status, await res.json())
 }
 
-// getSnapshot: GET /snapshot
+// getSnapshot: GET /v1/snapshot
 {
-  const url = new URL("/snapshot", BASE_URL)
+  const url = new URL("/v1/snapshot", BASE_URL)
   url.search = new URLSearchParams([["network","testnet"]]).toString()
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getSnapshot", res.status, await res.json())
 }
 
-// listDiscoveryResources: GET /discovery/resources
+// listDiscoveryResources: GET /v1/discovery/resources
 {
-  const url = new URL("/discovery/resources", BASE_URL)
+  const url = new URL("/v1/discovery/resources", BASE_URL)
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("listDiscoveryResources", res.status, await res.json())
 }
 
-// getMyUsage: GET /usage/me
+// searchDiscoveryResources: GET /v1/discovery/search
 {
-  const url = new URL("/usage/me", BASE_URL)
+  const url = new URL("/v1/discovery/search", BASE_URL)
+  url.search = new URLSearchParams([["q","USDC"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("searchDiscoveryResources", res.status, await res.json())
+}
+
+// getMyUsage: GET /v1/usage/me
+{
+  const url = new URL("/v1/usage/me", BASE_URL)
   const headers: Record<string, string> = { Authorization: 'Bearer ' + requireEnv('LENS_API_KEY') }
   const res = await fetch(url, { headers })
   console.log("getMyUsage", res.status, await res.json())
 }
 
-// getSupported: GET /supported
+// getCallerUsage: GET /v1/usage
 {
-  const url = new URL("/supported", BASE_URL)
+  const url = new URL("/v1/usage", BASE_URL)
+  const headers: Record<string, string> = { Authorization: 'Bearer ' + requireEnv('LENS_API_KEY') }
+  const res = await fetch(url, { headers })
+  console.log("getCallerUsage", res.status, await res.json())
+}
+
+// getSupported: GET /v1/supported
+{
+  const url = new URL("/v1/supported", BASE_URL)
   const headers: Record<string, string> = {}
   const res = await fetch(url, { headers })
   console.log("getSupported", res.status, await res.json())
