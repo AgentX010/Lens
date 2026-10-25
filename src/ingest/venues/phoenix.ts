@@ -448,6 +448,8 @@ export function derivePhoenixPricePoints(
   const price = calcSpotPrice(a, b)
   if (price === 0) return []
 
+  const now = new Date()
+
   return [
     {
       assetA: pair.assetA.code,
@@ -459,7 +461,9 @@ export function derivePhoenixPricePoints(
       baseVolume: 0,
       counterVolume: 0,
       ledger: 0,
-      timestamp: new Date(),
+      observedAt: now,
+      sourceTime: null,
+      timestamp: now,
       eventId: `phoenix-${raw.poolAddress}-${Date.now()}`,
     },
   ]
@@ -529,10 +533,14 @@ export async function ingestPhoenixPair(
 
 export const phoenixAdapter: VenueAdapter<PhoenixPool, PhoenixReserves> = {
   name: 'Phoenix',
+  type: 'Liquidity Pool',
+  description: 'Phoenix AMM pools on Soroban',
   source: 'phoenix_amm',
+  sourceTimeCapability: { status: 'unavailable' },
+  classification: 'primary',
 
   isEnabled(network: NetworkName): boolean {
-    return getNetworkConfig(network).phoenix.enabled
+    return getNetworkConfig(network).phoenix?.enabled ?? false
   },
 
   getPollIntervalMs(network: NetworkName): number {

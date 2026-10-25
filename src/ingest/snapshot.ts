@@ -3,6 +3,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { getActivePairs } from '../pairsRegistry'
 import { price_snapshots_total } from '../metrics'
 import { createLogger } from '../logger'
+import { runCycleWithDeadline } from '../ingest/cycleDeadline'
 
 const log = createLogger('ingester:snapshot')
 
@@ -48,14 +49,14 @@ export async function appendSnapshots(
        SELECT DISTINCT ON (pair_key) pair_key, price::numeric AS price
        FROM price_points
        WHERE pair_key = ANY($1) AND network = $3
-       ORDER BY pair_key, timestamp DESC
+       ORDER BY pair_key, COALESCE(observed_at, timestamp) DESC
      ),
      vol AS (
        SELECT pair_key, SUM(base_volume::numeric) AS volume
        FROM price_points
        WHERE pair_key = ANY($1) AND network = $3
-         AND timestamp >= $2
-         AND timestamp < $2 + INTERVAL '1 minute'
+         AND COALESCE(observed_at, timestamp) >= $2
+         AND COALESCE(observed_at, timestamp) < $2 + INTERVAL '1 minute'
        GROUP BY pair_key
      )
      INSERT INTO price_snapshots (network, pair, ts, price, volume)
@@ -89,8 +90,23 @@ export async function startSnapshotIngester(network: NetworkName = activeNetwork
     await sleep(msToNextMinute)
 
     try {
-      const n = await appendSnapshots(new Date(), network)
-      if (n > 0) log.info({ network, snapshots: n }, 'appended snapshots')
+      // Sleep to the minute boundary is not part of the cycle — the deadline
+      // bounds the append itself, exactly like one venue-adapter round.
+      //
+      // On expiry (#351) the append is counted as abandoned and the loop
+      // resumes. `appendSnapshots` is a single `INSERT … ON CONFLICT … DO
+      // NOTHING`, so the worst an abandoned snapshot cycle can leave behind
+      // is that fully-committed statement or nothing at all: there is no
+      // sequence of writes for a checkpoint to land in the middle of.
+      await runCycleWithDeadline({
+        venue: 'Snapshot',
+        network,
+        cycle: async (signal) => {
+          if (signal.aborted) return
+          const n = await appendSnapshots(new Date(), network)
+          if (n > 0) log.info({ network, snapshots: n }, 'appended snapshots')
+        },
+      })
     } catch (err) {
       log.error({ network, err }, 'error appending snapshots')
     }

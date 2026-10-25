@@ -15,10 +15,12 @@ import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
-import { venueAdapters, startVenueAdapter } from './ingest/venues'
-import { startSnapshotIngester } from './ingesters/snapshot'
+import { venueAdapters, startVenueAdapter, startBlendIngester } from './ingest/venues'
+import { startSnapshotIngester } from './ingest/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
+import { createVenueReconciliationQueue, startVenueReconciliationWorker, scheduleVenueReconciliation, startInProcessVenueReconciliation } from './jobs/venueReconciliation'
+import { createRateRetentionQueue, startRateRetentionWorker, scheduleRateRetention, pruneAllRateNetworks, RATE_RETENTION_DAYS } from './jobs/lendingRateRetention'
 import {
   createPricePointsPartitionQueue,
   startPricePointsPartitionWorker,
@@ -38,6 +40,7 @@ const log = createLogger('startup')
 // prints an unredacted error is the one place that matters most — a crash log
 // is exactly where a connection string or an API key tends to surface.
 installProcessErrorHandlers(log)
+
 
 async function main() {
   // ── Ensure DB schema is up-to-date ────────────────────────────────────────
@@ -167,6 +170,57 @@ async function main() {
     }
   }
 
+  // ── Venue dispersion reconciliation ───────────────────────────────────────
+  // Periodically computes per-pair cross-venue dispersion, stores reconciliation
+  // history, and alerts if dispersion exceeds threshold.
+  {
+    for (const network of getEnabledNetworks()) {
+      let reconQueue: ReturnType<typeof createVenueReconciliationQueue> | undefined
+      let reconWorker: ReturnType<typeof startVenueReconciliationWorker> | undefined
+      try {
+        reconQueue = createVenueReconciliationQueue(network)
+        reconWorker = startVenueReconciliationWorker(network)
+        await scheduleVenueReconciliation(reconQueue, network)
+        log.info({ network }, 'venue reconciliation worker started')
+      } catch (err) {
+        log.warn({ err, network }, 'venue reconciliation worker unavailable; falling back to in-process timer')
+        await Promise.allSettled([reconQueue?.close(), reconWorker?.close()])
+        startInProcessVenueReconciliation(network)
+      }
+    }
+  }
+
+  // ── Lending rate retention ────────────────────────────────────────────────
+  const safeRatePrune = async () => {
+    try {
+      const counts = await pruneAllRateNetworks()
+      for (const [network, pruned] of Object.entries(counts)) {
+        if (pruned > 0) {
+          log.info({ network, pruned, retentionDays: RATE_RETENTION_DAYS }, 'pruned old lending rates')
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'lending rate prune failed')
+    }
+  }
+
+  await safeRatePrune()
+
+  {
+    let rateRetentionQueue: ReturnType<typeof createRateRetentionQueue> | undefined
+    let rateRetentionWorker: ReturnType<typeof startRateRetentionWorker> | undefined
+    try {
+      rateRetentionQueue = createRateRetentionQueue()
+      rateRetentionWorker = startRateRetentionWorker()
+      await scheduleRateRetention(rateRetentionQueue)
+      log.info('lending rate retention worker started')
+    } catch (err) {
+      log.warn({ err }, 'lending rate retention worker unavailable; falling back to hourly in-process prune')
+      await Promise.allSettled([rateRetentionQueue?.close(), rateRetentionWorker?.close()])
+      setInterval(() => { void safeRatePrune() }, 60 * 60 * 1000).unref()
+    }
+  }
+
   // ── Price points partition maintenance & retention ────────────────────────
   // price_points is range-partitioned by timestamp. We pre-create future partitions
   // ahead of need so ingesters never fail on unmapped timestamp ranges. Dropping
@@ -207,6 +261,7 @@ async function main() {
   }
 
   // ── Ingesters (run in background — infinite loops) ────────────────────────
+
   // Each ingester is independently fault-isolated via restartIngester, keyed by
   // the (venue, network) pair: a crash in, say, the Soroswap ingester on
   // mainnet only restarts that one instance and cannot affect SDEX/AMM or the
@@ -260,6 +315,7 @@ async function main() {
       restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
     }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))
+    restartIngester('Blend', network, () => startBlendIngester(network))
 
     // The publisher is the one loop in this process that writes to a chain, so
     // it is started on its own per-network switch rather than alongside the

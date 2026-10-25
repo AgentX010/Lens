@@ -42,6 +42,9 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV }
+  // One test advances the system clock to walk past an overlap window; leaving
+  // fake timers installed would leak that into every test after it.
+  vi.useRealTimers()
 })
 
 describe('Issue #501: Key Rotation (POST /admin/keys/:id/rotate)', () => {
@@ -199,7 +202,19 @@ describe('Issue #501: Key Rotation (POST /admin/keys/:id/rotate)', () => {
     expect(resNewDuringOverlap.statusCode).toBe(200)
     expect(resNewDuringOverlap.json().key).toBe('new-key-id')
 
-    // State 2: After overlap ends (old key expired)
+    // State 2: after the overlap window ends.
+    //
+    // Advance the clock rather than only swapping the database row. With the
+    // API-key lookup cache (#495) the old key's entry is already held, and the
+    // guarantee that matters is that a cached entry is re-checked against its
+    // own `expiresAt` on every hit — so the cache can never keep a key alive
+    // past its expiry, with or without a database read. Rewriting the row
+    // alone would only exercise the documented cross-instance TTL window, and
+    // would have passed before the cache existed for reasons that no longer
+    // hold.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date(futureExpiration.getTime() + 1000))
+
     mockFindUnique.mockImplementation(({ where }: any) => {
       if (where.hash === oldHash) {
         return Promise.resolve({
@@ -232,7 +247,8 @@ describe('Issue #501: Key Rotation (POST /admin/keys/:id/rotate)', () => {
     expect(resOldAfterOverlap.statusCode).toBe(401)
     expect(resOldAfterOverlap.json().code).toBe('expired')
 
-    // New key continues to work smoothly without outage
+    // New key continues to work smoothly without outage — it has no expiry,
+    // so the advanced clock must not touch it.
     const resNewAfterOverlap = await app.inject({
       method: 'GET',
       url: '/protected',
