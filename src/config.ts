@@ -67,6 +67,16 @@ export interface NetworkConfig {
     /** Reflector oracle contract ID for this network. */
     reflectorContractId: string
   }
+  blend: {
+    /** Whether Blend lending rate ingestion is enabled on this network. */
+    enabled: boolean
+    /** Blend pool contract addresses for this network. */
+    pools: string[]
+    /** Blend backstop contract address for this network. */
+    backstopContractId: string
+    /** How often to poll Blend pool reserves in ms. */
+    pollIntervalMs: number
+  }
   /**
    * The SEP-40 publisher — the one direction that writes. `oracle` above is
    * Lens reading somebody else's feed; this is Lens pushing its own aggregate
@@ -347,6 +357,47 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
     (process.env[`REFLECTOR_ENABLED_${suffix}`] ?? 'true').toLowerCase() !== 'false' &&
     isUsableContractId(reflectorContractId, `REFLECTOR_CONTRACT_ID_${suffix}`)
 
+  // ── Blend lending protocol ────────────────────────────────────────────────
+  const MAINNET_BLEND_POOLS = [
+    'CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD', // Fixed Pool v2
+    'CCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS', // YieldBlox Pool v2
+    'CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP', // Fixed Pool v1
+    'CBP7NO6F7FRDHSOFQBT2L2UWYIZ2PU76JKVRYAQTG3KZSQLYAOKIF2WB', // YieldBlox Pool v1
+  ]
+  const MAINNET_BLEND_BACKSTOP = 'CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7'
+
+  const TESTNET_BLEND_POOLS = [
+    'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF', // TestnetV2 Pool
+  ]
+  const TESTNET_BLEND_BACKSTOP = 'CBDVWXT433PRVTUNM56C3JREF3HIZHRBA64NB2C3B2UNCKIS65ZYCLZA'
+
+  const blendBackstop =
+    process.env[`BLEND_BACKSTOP_${suffix}`] ||
+    (network === 'testnet' ? process.env.BLEND_BACKSTOP : undefined) ||
+    (network === 'mainnet' ? MAINNET_BLEND_BACKSTOP : TESTNET_BLEND_BACKSTOP)
+
+  const rawBlendPools =
+    process.env[`BLEND_POOLS_${suffix}`] ||
+    (network === 'testnet' ? process.env.BLEND_POOLS : undefined)
+
+  const parsedBlendPools: string[] = rawBlendPools
+    ? rawBlendPools
+        .split(',')
+        .map(p => p.trim())
+        .filter(p => isUsableContractId(p, `BLEND_POOLS_${suffix}`))
+    : (network === 'mainnet' ? MAINNET_BLEND_POOLS : TESTNET_BLEND_POOLS)
+
+  const blendEnabled =
+    (process.env[`BLEND_ENABLED_${suffix}`] ?? (network === 'testnet' ? (process.env.BLEND_ENABLED ?? 'true') : 'true')).toLowerCase() !== 'false' &&
+    parsedBlendPools.length > 0 &&
+    isUsableContractId(blendBackstop, `BLEND_BACKSTOP_${suffix}`)
+
+  const blendPollMs = parseInt(
+    process.env[`BLEND_POLL_INTERVAL_MS_${suffix}`] ||
+    process.env.BLEND_POLL_INTERVAL_MS ||
+    '60000',
+    10
+  )
   // ── SEP-40 publisher ──────────────────────────────────────────────────────
   // Off unless a contract is deployed AND a key is provided. There is no
   // default contract id: the feed is deployed by the operator (see
@@ -446,6 +497,12 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
       poolCacheTtlMs: phoenixPoolCacheTtlMs,
     },
     oracle: { enabled: oracleEnabled, reflectorContractId },
+    blend: {
+      enabled: blendEnabled,
+      pools: parsedBlendPools,
+      backstopContractId: blendBackstop,
+      pollIntervalMs: blendPollMs,
+    },
     publisher: {
       enabled: publisherEnabled,
       contractId: sep40ContractId,
@@ -458,6 +515,23 @@ function buildNetworkConfig(network: NetworkName): NetworkConfig {
 }
 
 // ── Global (non-network-specific) config ──────────────────────────────────────
+
+function parsePairThresholds(raw: string | undefined): Record<string, number> {
+  if (!raw || !raw.trim()) return {}
+  const overrides: Record<string, number> = {}
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim()
+    const lastColon = trimmed.lastIndexOf(':')
+    if (lastColon > 0) {
+      const pair = trimmed.slice(0, lastColon).trim().toUpperCase()
+      const val = parseFloat(trimmed.slice(lastColon + 1).trim())
+      if (pair && Number.isFinite(val) && val > 0) {
+        overrides[pair] = val
+      }
+    }
+  }
+  return overrides
+}
 
 const globalConfig = {
   db: {
@@ -528,6 +602,13 @@ const globalConfig = {
   http: {
     timeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS ?? '10000', 10),
   },
+  reconciliation: {
+    intervalMs: parseInt(process.env.RECONCILIATION_INTERVAL_MS ?? '60000', 10),
+    freshnessWindowSeconds: parseInt(process.env.RECONCILIATION_FRESHNESS_SECONDS ?? '300', 10),
+    thresholdPct: parseFloat(process.env.RECONCILIATION_THRESHOLD_PCT ?? '2.0'),
+    cooldownSeconds: parseInt(process.env.RECONCILIATION_ALERT_COOLDOWN_SECONDS ?? '300', 10),
+    pairThresholds: parsePairThresholds(process.env.RECONCILIATION_PAIR_THRESHOLDS),
+  },
   ws: {
     pingIntervalMs: parseInt(process.env.WS_PING_INTERVAL_MS ?? '30000', 10),
     maxMissedPings: parseInt(process.env.WS_MAX_MISSED_PINGS ?? '2', 10),
@@ -552,6 +633,7 @@ const globalConfig = {
     maxPageLimit: clampInt(process.env.MCP_MAX_PAGE_LIMIT, 200, 1, 1000),
   },
 } as const
+
 
 // ── Per-network map ───────────────────────────────────────────────────────────
 
@@ -623,6 +705,7 @@ export const config = {
   get defindex() { return resolveNetwork(activeNetwork).defindex },
   get phoenix()  { return resolveNetwork(activeNetwork).phoenix },
   get oracle()   { return resolveNetwork(activeNetwork).oracle },
+  get blend()    { return resolveNetwork(activeNetwork).blend },
   get pairs()    { return resolveNetwork(activeNetwork).pairs },
   get routing()  { return resolveNetwork(activeNetwork).routing },
   get facilitator() { return resolveNetwork(activeNetwork).facilitator },
@@ -640,7 +723,14 @@ export const config = {
   cache:   globalConfig.cache,
   plausibility: globalConfig.plausibility,
   http:    globalConfig.http,
+  reconciliation: globalConfig.reconciliation,
   ws:      globalConfig.ws,
   outbound: globalConfig.outbound,
   mcp: globalConfig.mcp,
 }
+
+export function getPairReconciliationThreshold(pairKey: string): number {
+  const norm = pairKey.toUpperCase()
+  return config.reconciliation.pairThresholds[norm] ?? config.reconciliation.thresholdPct
+}
+
