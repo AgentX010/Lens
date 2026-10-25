@@ -50,6 +50,7 @@ import { createCorsDelegator, type CorsConfig } from './cors'
  */
 const PROBE_PATHS = new Set(['/status', '/live', '/ready'])
 
+
 export interface BuildAppOptions {
   /**
    * Invoked for every route Fastify registers, before the app is ready.
@@ -239,9 +240,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerVenueRoutes(app)
   await registerFiatRoutes(app)
   await registerSettleRoute(app)
+  await registerDispersionRoutes(app)
   await registerHealthRoutes(app)
   await registerTvlRoutes(app)
   await registerGraphQL(app)
+
   await registerWebSocket(app)
 
   // Global error handler: catches unhandled errors, ensuring database pool exhaustion
