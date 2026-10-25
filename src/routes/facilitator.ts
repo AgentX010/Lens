@@ -70,9 +70,19 @@ export function extractAuthoritativeAmount(transactionXdr: string, network: Netw
       if (op.type === 'payment' && 'amount' in op && typeof op.amount === 'string') {
         total += parseFloat(op.amount)
         hasPayment = true
-      } else if (op.type === 'pathPaymentStrictReceive' && 'destAmount' in op && typeof op.destAmount === 'string') {
-        total += parseFloat(op.destAmount)
-        hasPayment = true
+      } else if (op.type === 'pathPaymentStrictReceive') {
+        // What this op can cost the payer is `sendMax`, not `destAmount`.
+        // destAmount is what the *destination* receives; the debit is whatever
+        // the path costs, up to sendMax. A ceiling measured on destAmount would
+        // wave through destAmount: 1 with sendMax: 10000. Bound the debit.
+        const sendMax = 'sendMax' in op && typeof op.sendMax === 'string' ? parseFloat(op.sendMax) : NaN
+        const destAmount =
+          'destAmount' in op && typeof op.destAmount === 'string' ? parseFloat(op.destAmount) : NaN
+        const bound = Number.isFinite(sendMax) ? sendMax : destAmount
+        if (Number.isFinite(bound)) {
+          total += bound
+          hasPayment = true
+        }
       } else if (op.type === 'pathPaymentStrictSend' && 'sendAmount' in op && typeof op.sendAmount === 'string') {
         total += parseFloat(op.sendAmount)
         hasPayment = true
