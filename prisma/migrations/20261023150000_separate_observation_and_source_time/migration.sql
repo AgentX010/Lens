@@ -14,7 +14,14 @@
 --     truthfully reflecting that no native source timestamp existed for them.
 --   - observed_at is set to timestamp for existing rows (since that was the recorded temporal anchor).
 
-ALTER TABLE "price_points" ADD COLUMN IF NOT EXISTS "observed_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+-- Added nullable first, backfilled, then constrained. Adding it NOT NULL
+-- DEFAULT CURRENT_TIMESTAMP and then matching rows with
+-- `WHERE observed_at = CURRENT_TIMESTAMP` does work, because CURRENT_TIMESTAMP
+-- is transaction-stable and Prisma runs a migration in one transaction -- but
+-- it is correct only for that reason, and if the backfill ever failed to match,
+-- every historical row would silently carry the migration time instead of its
+-- own. On the money table that is not a subtlety worth depending on.
+ALTER TABLE "price_points" ADD COLUMN IF NOT EXISTS "observed_at" TIMESTAMP(3);
 ALTER TABLE "price_points" ADD COLUMN IF NOT EXISTS "source_time" TIMESTAMP(3);
 
 -- Populate source_time only for sources that actually emitted native ledger close times
@@ -26,10 +33,15 @@ WHERE "source" IN ('SDEX', 'AMM')
 
 -- Non-native venues (soroswap_amm, aquarius_amm, and synthetic AMM snapshots) retain source_time = NULL
 
--- Backfill observed_at from existing timestamp for historical continuity
+-- Backfill observed_at from existing timestamp for historical continuity.
+-- NULL is unambiguous: only rows that predate the column match.
 UPDATE "price_points"
 SET "observed_at" = "timestamp"
-WHERE "observed_at" = CURRENT_TIMESTAMP;
+WHERE "observed_at" IS NULL;
+
+-- Only now constrain it, so the end state matches schema.prisma exactly.
+ALTER TABLE "price_points" ALTER COLUMN "observed_at" SET NOT NULL;
+ALTER TABLE "price_points" ALTER COLUMN "observed_at" SET DEFAULT CURRENT_TIMESTAMP;
 
 -- Create indexes on observed_at
 CREATE INDEX IF NOT EXISTS "price_points_network_pair_key_observed_at_idx"
