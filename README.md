@@ -92,6 +92,7 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | Method | Path | Description |
 |---|---|---|
 | GET | `/venues/registry` | List registered venues and their network liveness |
+| GET | `/venues` | Venue Share of Volume |
 | GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
 | GET | `/tvl` | Total Value Locked across Stellar DeFi venues |
 | GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
@@ -114,6 +115,8 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
 | GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
 | GET | `/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
+| GET | `/dispersion/:assetA/:assetB` | Get venue price dispersion and outlier attribution for a pair |
+| GET | `/dispersion` | List cross-venue dispersion across watched pairs |
 | GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
 | GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
 | GET | `/movers` | Get biggest gainers, biggest losers, and volume movers |
@@ -367,6 +370,25 @@ const unsubscribe = client.subscribe(
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
+## Venue Price Dispersion & Reconciliation
+
+When multiple venues quote the same pair, their prices naturally diverge due to market dynamics and arbitrage opportunities. Lens periodically reconciles quotes across venues to detect unhealthy price dispersion or stale/faulty feeds:
+
+* **Dispersion Metric:** Measured as the **Maximum Absolute Percentage Deviation (MAPD)** from the median:
+  $$\text{deviationPct}_i = \frac{|p_i - \text{median}|}{\text{median}} \times 100$$
+  The venue with the maximum deviation is designated as the outlying venue. The median is chosen because it resists extreme skew from rogue or corrupted prints.
+* **Freshness Window:** Quotes older than `RECONCILIATION_FRESHNESS_SECONDS` (default: `300s` / 5 minutes) are excluded from the median and dispersion calculations, but their names are recorded in `staleVenues` so missing feeds remain visible.
+* **Edge Cases:**
+  * **Single-Venue Pair:** Dispersion is not meaningful. Recorded explicitly with `status: "insufficient_venues"` without computing a fake zero or raising an alert.
+  * **Two-Venue Pair:** Both venues sit equidistant from their midpoint. Deterministic alphabetical tie-breaking picks the outlying venue, and `isAmbiguous: true` is flagged.
+  * **Defensive Math:** Non-positive and non-finite quotes are discarded defensively.
+* **Alerting & Suppression:**
+  * When dispersion exceeds `RECONCILIATION_THRESHOLD_PCT` (default: `2.0%`, with optional per-pair overrides via `RECONCILIATION_PAIR_THRESHOLDS`), an alert is delivered to registered webhooks for the pair and emitted on `priceEmitter` (`dispersion:alert`).
+  * Alerts include the pair, dispersion %, threshold %, and the outlying venue by name.
+  * Cooldown suppression (`RECONCILIATION_ALERT_COOLDOWN_SECONDS`, default: `300s`) prevents duplicate alerts while elevated dispersion persists, automatically resetting once prices converge back within threshold.
+* **Querying Dispersion:**
+  * `GET /dispersion/:assetA/:assetB?from=…&to=…&limit=50&network=testnet`
+  * `GET /dispersion?pair=XLM/USDC&network=mainnet`
 ## MCP server
 
 `npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
@@ -527,7 +549,36 @@ bytes updates are coalesced to the newest one, past 1 MiB — or congested for 3
 `ws_messages_dropped_total` rather than silent, and one slow client cannot affect
 any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
+## Time Model: Observation Time vs. Source Time
+
+Lens separates observation time from source time to avoid conflating local ingestion wall-clock time with native blockchain or exchange timestamps:
+
+* **`observed_at`** (`DateTime`, non-null): The UTC wall-clock timestamp when Lens recorded/ingested the sample.
+* **`source_time`** (`DateTime?`, nullable): The native timestamp reported by the source venue itself. Null when the source has no native timestamp.
+* **`ledger`** (`Int`): Stellar ledger sequence number, kept distinct from timestamp fields.
+
+### Venue Capabilities
+
+Every venue adapter explicitly declares its `sourceTimeCapability`:
+
+| Venue / Adapter | Status | Semantic | Description |
+|---|---|---|---|
+| **SDEX** | `provided` | `ledger_close` | Horizon ledger close time of the executed trade. |
+| **AMM (Trades)** | `provided` | `ledger_close` | Horizon ledger close time of the pool trade. |
+| **AMM (Snapshots)** | `unavailable` | - | State snapshot; `source_time` is `null`. |
+| **Soroswap AMM** | `unavailable` | - | Contract simulation; `source_time` is `null` (never backfilled with wall-clock). |
+| **Aquarius AMM** | `unavailable` | - | API state snapshot; `source_time` is `null` (never backfilled with wall-clock). |
+| **CEX Adapters** | `provided` | `exchange_timestamp` | Exchange-reported trade/ticker timestamp. |
+
+### Bucketing Rationale
+
+All candle aggregation (`/candles`), time windowing, TWAP, and VWAP calculations key on **`observed_at`** (observation time):
+
+* **Cross-venue completeness**: State-only venues (Soroswap, Aquarius, AMM reserve snapshots) have no trade execution timestamps (`source_time = null`). Bucketing on `source_time` would drop or misrepresent state snapshots.
+* **Monotonic reference clock**: `observed_at` provides a single monotonic time reference across all venues, preventing clock skew, reorg gaps, and polling latency skews from distorting aggregate candles.
+
 ## Usage Examples
+
 
 Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
 
