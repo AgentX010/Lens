@@ -7,6 +7,7 @@ import { buildApp } from '../src/app'
 import {
   INTERNAL_ROUTES,
   isInternalRoute,
+  isUndocumentableOperation,
   isVersionedPath,
   toBarePath,
   toOpenApiPath,
@@ -83,6 +84,10 @@ describe('OpenAPI route coverage', () => {
     const missing = registered.filter(
       r =>
         !isInternalRoute(r.path) &&
+        // QUERY /graphql has no OpenAPI 3.0 operation key; see
+        // UNDOCUMENTABLE_OPERATIONS. Matched on the bare path, which is how
+        // the allow-list is written.
+        !isUndocumentableOperation(r.method, r.path) &&
         !(r.method.toLowerCase() in (spec.paths[documentedPath(r)] ?? {})),
     )
     expect(missing, `Undocumented operations: ${JSON.stringify(missing)}`).toEqual([])

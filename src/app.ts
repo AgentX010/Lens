@@ -35,7 +35,13 @@ import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerApiVersioning, rewriteVersionedApiUrl } from './api/versioning'
-import { getMetrics } from './metrics'
+import { registerDispersionRoutes } from './routes/dispersion'
+import { registerHealthRoutes } from './routes/health'
+import { registerTvlRoutes } from './routes/tvl'
+import { registerCachePolicy } from './middleware/cachePolicy'
+import { registerFiatRoutes } from './routes/fiat'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
 import { isPoolExhaustionError, recordPoolExhaustion } from './db'
 import { createCorsDelegator, type CorsConfig } from './cors'
@@ -85,12 +91,23 @@ export const RATE_LIMITS = {
 } as const
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
+  // Share the structured logger configuration (level, redaction, dev pretty
+  // printing) with Fastify so `req.log` is scrubbed the same way.
   const app = Fastify({
-    logger: { level: 'warn' },
+    logger: { ...loggerOptions(), stream: createDestination() },
+    genReqId: () => randomUUID(),
     // Resolves `/v1/<path>` onto the single bare route that is registered, so
     // every route answers at both `/v1/...` and its unversioned alias without
     // being mounted twice. See src/api/versioning.ts.
     rewriteUrl: rewriteVersionedApiUrl,
+  })
+
+  app.setErrorHandler((error: any, req, reply) => {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500
+    if (statusCode < 500) {
+      return reply.status(statusCode).send(error)
+    }
+    return sendInternalError(reply, req, error, 'Unhandled server error')
   })
 
   // Capture route registrations first, so it observes every route below
@@ -99,13 +116,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.addHook('onRoute', options.onRoute)
   }
 
-  await app.register(cors, {
-    origin: true,
-    // Let browser clients read the deprecation warning on unversioned aliases
-    // (see src/api/versioning.ts); custom response headers are hidden by
-    // default cross-origin.
-    exposedHeaders: ['Deprecation', 'Link'],
-  })
+  // #268: one policy no longer covers public reads, credentialed calls and the
+  // admin surface. See src/cors.ts.
+  await app.register(cors, { delegator: createCorsDelegator(options.corsConfig) })
+  await app.register(registerETag)
   await app.register(compress)
 
   // Warn callers who use the deprecated unversioned aliases (Deprecation /

@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/venues/registry": {
+    "/v1/venues/registry": {
         parameters: {
             query?: never;
             header?: never;
@@ -24,7 +24,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/venues": {
+    "/v1/venues": {
         parameters: {
             query?: never;
             header?: never;
@@ -46,7 +46,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/live": {
+    "/v1/live": {
         parameters: {
             query?: never;
             header?: never;
@@ -66,7 +66,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/tvl": {
+    "/v1/tvl": {
         parameters: {
             query?: never;
             header?: never;
@@ -86,7 +86,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ready": {
+    "/v1/ready": {
         parameters: {
             query?: never;
             header?: never;
@@ -107,7 +107,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/status": {
+    "/v1/status": {
         parameters: {
             query?: never;
             header?: never;
@@ -124,7 +124,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/snapshot": {
+    "/v1/snapshot": {
         parameters: {
             query?: never;
             header?: never;
@@ -144,7 +144,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/{assetA}/{assetB}": {
+    "/v1/price/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -161,7 +161,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/{assetA}/{assetB}/route": {
+    "/v1/price/{assetA}/{assetB}/route": {
         parameters: {
             query?: never;
             header?: never;
@@ -178,7 +178,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/{asset}/fiat": {
+    "/v1/price/{asset}/fiat": {
         parameters: {
             query?: never;
             header?: never;
@@ -195,7 +195,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/{assetA}/{assetB}/history": {
+    "/v1/price/{assetA}/{assetB}/history": {
         parameters: {
             query?: never;
             header?: never;
@@ -212,7 +212,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/pools": {
+    "/v1/pools": {
         parameters: {
             query?: never;
             header?: never;
@@ -229,7 +229,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/candles/{assetA}/{assetB}": {
+    "/v1/candles/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -246,7 +246,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/prices/history": {
+    "/v1/prices/history": {
         parameters: {
             query?: never;
             header?: never;
@@ -266,7 +266,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/pairs": {
+    "/v1/pairs": {
         parameters: {
             query?: never;
             header?: never;
@@ -284,7 +284,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/{assetA}/{assetB}/depth": {
+    "/v1/price/{assetA}/{assetB}/depth": {
         parameters: {
             query?: never;
             header?: never;
@@ -304,7 +304,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/book/{assetA}/{assetB}": {
+    "/v1/book/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -324,7 +324,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/impact/{assetA}/{assetB}": {
+    "/v1/impact/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -344,7 +344,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/twap/{assetA}/{assetB}": {
+    "/v1/price/twap/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -361,7 +361,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/price/vwap/{assetA}/{assetB}": {
+    "/v1/price/vwap/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -378,7 +378,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/volumes/{asset}": {
+    "/v1/volumes/{asset}": {
         parameters: {
             query?: never;
             header?: never;
@@ -398,7 +398,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/spreads/{asset}": {
+    "/v1/spreads/{asset}": {
         parameters: {
             query?: never;
             header?: never;
@@ -418,7 +418,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/rates/{asset}": {
+    "/v1/rates/{asset}": {
         parameters: {
             query?: never;
             header?: never;
@@ -439,7 +439,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/dispersion/{assetA}/{assetB}": {
+    "/v1/dispersion/{assetA}/{assetB}": {
         parameters: {
             query?: never;
             header?: never;
@@ -459,7 +459,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/dispersion": {
+    "/v1/dispersion": {
         parameters: {
             query?: never;
             header?: never;
@@ -479,7 +479,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/compare/{asset}": {
+    "/v1/compare/{asset}": {
         parameters: {
             query?: never;
             header?: never;
@@ -499,7 +499,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/screener": {
+    "/v1/screener": {
         parameters: {
             query?: never;
             header?: never;
@@ -516,7 +516,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/movers": {
+    "/v1/movers": {
         parameters: {
             query?: never;
             header?: never;
@@ -536,7 +536,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/benchmark/{asset}": {
+    "/v1/benchmark/{asset}": {
         parameters: {
             query?: never;
             header?: never;
@@ -553,7 +553,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/basket": {
+    "/v1/basket": {
         parameters: {
             query?: never;
             header?: never;
@@ -573,7 +573,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/correlation": {
+    "/v1/correlation": {
         parameters: {
             query?: never;
             header?: never;
@@ -590,7 +590,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/discovery/resources": {
+    "/v1/discovery/resources": {
         parameters: {
             query?: never;
             header?: never;
@@ -607,7 +607,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/discovery/search": {
+    "/v1/discovery/search": {
         parameters: {
             query?: never;
             header?: never;
@@ -624,7 +624,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/webhooks": {
+    "/v1/webhooks": {
         parameters: {
             query?: never;
             header?: never;
@@ -644,7 +644,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/webhooks/{id}": {
+    "/v1/webhooks/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -661,7 +661,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/usage/me": {
+    "/v1/usage/me": {
         parameters: {
             query?: never;
             header?: never;
@@ -678,7 +678,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/usage": {
+    "/v1/usage": {
         parameters: {
             query?: never;
             header?: never;
@@ -695,7 +695,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/supported": {
+    "/v1/supported": {
         parameters: {
             query?: never;
             header?: never;
@@ -712,7 +712,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/verify": {
+    "/v1/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -729,7 +729,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/settle": {
+    "/v1/settle": {
         parameters: {
             query?: never;
             header?: never;
@@ -749,7 +749,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/graphql": {
+    "/v1/graphql": {
         parameters: {
             query?: never;
             header?: never;
@@ -767,7 +767,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/rates": {
+    "/v1/rates": {
         parameters: {
             query?: never;
             header?: never;
