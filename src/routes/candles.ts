@@ -103,12 +103,12 @@ export async function registerCandleRoutes(app: FastifyInstance) {
 
     const result = await pgPool.query(
       `SELECT
-         to_timestamp(floor(EXTRACT(EPOCH FROM timestamp) / $1) * $1) AS time,
-         (array_agg(price::float ORDER BY timestamp ASC))[1]  AS open,
-         MAX(price::float)                                     AS high,
-         MIN(price::float)                                     AS low,
-         (array_agg(price::float ORDER BY timestamp DESC))[1] AS close,
-         SUM(base_volume::float)                              AS volume
+         to_timestamp(floor(EXTRACT(EPOCH FROM observed_at) / $1) * $1) AS time,
+         (array_agg(price::float ORDER BY observed_at ASC))[1]  AS open,
+         MAX(price::float)                                      AS high,
+         MIN(price::float)                                      AS low,
+         (array_agg(price::float ORDER BY observed_at DESC))[1] AS close,
+         SUM(base_volume::float)                               AS volume
        FROM price_points
        WHERE pair_key = $2
          AND network = $5

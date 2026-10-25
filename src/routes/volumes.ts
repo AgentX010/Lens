@@ -40,13 +40,14 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
     Querystring: { window?: string; network?: string }
   }>('/volumes/:asset', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const { asset } = req.params
-    const window = req.query.window ?? '24h'
 
     if (!(window in WINDOW_HOURS)) {
       return reply
         .status(400)
         .send(apiError('bad_window', `window must be one of: ${WINDOWS.join(', ')}`))
     }
+  })
+}
 
     const requested = req.query.network
     if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
@@ -55,90 +56,37 @@ export async function registerVolumeRoutes(app: FastifyInstance) {
     const network: NetworkName = req.network
       ?? (requested ? requested as NetworkName : activeNetwork)
 
-    const hours = WINDOW_HOURS[window as VolumeWindow]
-    const endTime = new Date()
-    const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000)
+export type VolumesResult = Awaited<ReturnType<typeof computeVolumes>>
 
-    try {
-      // The CTE gives each observation its volume in the requested asset's own
-      // units. Statistics are aggregated in Postgres so a long window does not
-      // require sending every trade to the API process.
-      const { rows } = await pgPool.query(
-        `WITH asset_trades AS (
-           SELECT source,
-                  timestamp,
-                  (CASE
-                    WHEN asset_a = $1 THEN base_volume
-                    WHEN asset_b = $1 THEN counter_volume
-                  END)::numeric AS volume
-             FROM price_points
-            WHERE (asset_a = $1 OR asset_b = $1)
-              AND network = $2
-              AND timestamp >= $3
-         ),
-         venue_totals AS (
-           SELECT source,
-                  SUM(volume)::float8 AS volume,
-                  (COUNT(*) FILTER (WHERE volume > 0))::int AS trade_count
-             FROM asset_trades
-            GROUP BY source
-         ),
-         trade_stats AS (
-           SELECT (COUNT(*) FILTER (WHERE volume > 0))::int AS trade_count,
-                  COUNT(*)::int AS observed_sample_count,
-                  SUM(volume)::float8 AS total_volume,
-                  percentile_cont(0.5) WITHIN GROUP (ORDER BY volume::float8)
-                    FILTER (WHERE volume > 0) AS median_trade_size,
-                  (MAX(volume) FILTER (WHERE volume > 0))::float8
-                    / NULLIF((SUM(volume) FILTER (WHERE volume > 0))::float8, 0) AS top_trade_volume_share,
-                  (SUM(volume * volume) FILTER (WHERE volume > 0))::float8
-                    / NULLIF(POWER((SUM(volume) FILTER (WHERE volume > 0))::float8, 2), 0) AS volume_concentration,
-                  MAX(timestamp) FILTER (WHERE volume > 0) AS latest_trade_at
-             FROM asset_trades
-         ),
-         venue_summary AS (
-           SELECT COALESCE(jsonb_object_agg(source, volume) FILTER (WHERE volume > 0), '{}'::jsonb) AS by_venue,
-                  COALESCE(jsonb_agg(source ORDER BY source) FILTER (WHERE volume > 0), '[]'::jsonb) AS venues,
-                  COALESCE(jsonb_object_agg(source, trade_count) FILTER (WHERE volume > 0), '{}'::jsonb) AS trade_count_by_venue
-             FROM venue_totals
-         )
-         SELECT trade_stats.*, venue_summary.by_venue, venue_summary.venues, venue_summary.trade_count_by_venue
-           FROM trade_stats CROSS JOIN venue_summary`,
-        [asset, network, startTime],
-      )
+/**
+ * The aggregation behind `GET /volumes/:asset`, shared with the GraphQL
+ * `volumes` query so the two cannot drift. See {@link registerVolumeRoutes}
+ * for what the numbers mean.
+ *
+ * `requestNetwork` is the network the request-level selector already resolved
+ * (`req.network` on REST); when given it wins over `networkParam`, exactly as
+ * the route has always behaved. Throws {@link VolumesInputError} for a bad
+ * `window` or `network`; any other error is an internal failure.
+ */
+export async function computeVolumes(
+  asset: string,
+  windowParam: string | undefined,
+  networkParam: unknown,
+  requestNetwork?: NetworkName,
+) {
+  const window = windowParam ?? '24h'
 
-      const row = rows[0] ?? {}
-      const tradeCount = Number(row.trade_count) || 0
-      const observedSampleCount = Number(row.observed_sample_count) || 0
-      const totalVolume = Number(row.total_volume) || 0
-      const latestTradeAt = row.latest_trade_at == null
-        ? null
-        : new Date(row.latest_trade_at as string | Date).toISOString()
-      const dataAgeSeconds = latestTradeAt === null
-        ? null
-        : Math.max(0, Math.floor((endTime.getTime() - new Date(latestTradeAt).getTime()) / 1000))
-      const status = observedSampleCount === 0
-        ? 'no_trades'
-        : tradeCount === 0 || totalVolume <= 0
-          ? 'no_positive_volume'
-          : 'ok'
+  if (!(window in WINDOW_HOURS)) {
+    throw new VolumesInputError('window', `window must be one of: ${WINDOWS.join(', ')}`)
+  }
 
-      // Net excludes aggregator venues, which re-report trades that already
-      // settled on a primary market; gross is everything observed. The
-      // distribution statistics above (median, HHI, status) stay on gross.
-      const byVenue: Record<string, number> = row.by_venue ?? {}
-      const tradesByVenue: Record<string, number> = row.trade_count_by_venue ?? {}
-      let aggregatorVolume = 0
-      let aggregatorTradeCount = 0
-      for (const [source, volume] of Object.entries(byVenue)) {
-        if (!isAggregatorVenue(source)) continue
-        aggregatorVolume += Number(volume) || 0
-        aggregatorTradeCount += Number(tradesByVenue[source]) || 0
-      }
-      const grossVolume = totalVolume
-      const grossTradeCount = tradeCount
-      const netVolume = Math.max(0, grossVolume - aggregatorVolume)
-      const netTradeCount = Math.max(0, grossTradeCount - aggregatorTradeCount)
+  const rawRequested: unknown = networkParam
+  const requested = typeof rawRequested === 'string' ? rawRequested.trim().toLowerCase() : rawRequested
+  if (requested !== undefined && requested !== '' && requested !== 'testnet' && requested !== 'mainnet') {
+    throw new VolumesInputError('network', 'network must be one of: testnet, mainnet')
+  }
+  const network: NetworkName = requestNetwork
+    ?? (requested ? requested as NetworkName : activeNetwork)
 
       return {
         asset,
