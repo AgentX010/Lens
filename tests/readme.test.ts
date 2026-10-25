@@ -130,7 +130,10 @@ describe('README venue list and endpoint table generators', () => {
     const committed = readFileSync(readmePath, 'utf8')
     expect(readmeIsCurrent(committed)).toBe(true)
 
-    const edited = committed.replace('| GET | `/tvl` |', '| GET | `/tvl-renamed` |')
+    // The documented paths carry the /v1 prefix since 97c50bf. The assertion
+    // below is what keeps this honest: a replace that matched nothing would
+    // leave `edited` identical and the drift check would pass vacuously.
+    const edited = committed.replace('| GET | `/v1/tvl` |', '| GET | `/v1/tvl-renamed` |')
     expect(edited).not.toBe(committed)
     expect(readmeIsCurrent(edited)).toBe(false)
   })
