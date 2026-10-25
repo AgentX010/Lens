@@ -1556,18 +1556,6 @@ export interface components {
         };
     };
     responses: {
-        /** @description Bad request — a parameter failed validation. */
-        BadRequest: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": {
-                    error?: string;
-                    code?: string;
-                };
-            };
-        };
         /** @description Payment Required */
         PaymentRequired: {
             headers: {
