@@ -24,6 +24,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/venues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Venue Share of Volume
+         * @description Per-venue traded volume, market share (percentage of total), and period-over-period percentage change comparing the requested window against the immediately preceding window of identical duration.
+         *     Market shares sum to 100% within floating-point tolerance. Stale or excluded venues are explicitly listed in `excludedVenues`.
+         *     All queries are filtered by `network` via the `x-network` header — testnet and mainnet data are never merged into a single series.
+         */
+        get: operations["getVenueVolumeShare"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/live": {
         parameters: {
             query?: never;
@@ -778,6 +800,34 @@ export interface components {
             latencyMs: number;
             /** @example unreachable or not migrated */
             reason: string | null;
+        };
+        VenuesResponse: {
+            /** @enum {string} */
+            network: "testnet" | "mainnet";
+            /** @enum {string} */
+            window: "24h" | "7d" | "30d";
+            excludedVenues: string[];
+            venues: {
+                venue: string;
+                baseVolume: number;
+                counterVolume: number;
+                samples: number;
+                pairs: number;
+                marketShare: number;
+                periodOverPeriodPctChange: number;
+                lastUpdated: string | null;
+                ageSeconds: number | null;
+            }[];
+            totalVolume: {
+                value: number | null;
+                unit: Record<string, never> | null;
+                reason: string | null;
+            };
+            marketShares: {
+                total?: number;
+                variance?: number;
+            };
+            periodOverPeriodPctChange: number;
         };
         /** @description Readiness of one instance. Identical on 200 and 503; `ok` and the HTTP status together say whether traffic should be routed here. */
         ReadinessReport: {
@@ -1564,6 +1614,17 @@ export interface components {
                 "application/json": components["schemas"]["InternalErrorResponse"];
             };
         };
+        /** @description Invalid request parameters */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    error: string;
+                };
+            };
+        };
     };
     parameters: {
         /** @description Formatting for decimal quantities (prices, volumes, reserves). Set to `string` to serialize high-precision `Decimal(36,18)` quantities as exact strings, preventing IEEE-754 floating-point precision loss. Defaults to `number`. Can also be negotiated via `Accept: application/json; decimals=strings` or query parameter `?decimals=strings`. */
@@ -1613,6 +1674,42 @@ export interface operations {
                             /** Format: date-time */
                             lastSeenAt: string | null;
                         }[];
+                    };
+                };
+            };
+        };
+    };
+    getVenueVolumeShare: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+                /** @description Time window for the aggregation */
+                window?: "24h" | "7d" | "30d";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Venue volume share and market share data */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VenuesResponse"];
+                };
+            };
+            /** @description Invalid window parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
                     };
                 };
             };
