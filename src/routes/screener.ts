@@ -4,6 +4,14 @@ import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { activeNetwork } from '../config'
 import { formatValidationError, VALIDATION_ERROR_CODE } from '../validation'
+import {
+  ALLOWED_SORT_FIELDS,
+  MARKET_CAP_CODE,
+  MARKET_CAP_UNSUPPORTED,
+  runScreener,
+  ScreenerCursorError,
+  SCREENER_DEFAULT_LIMIT,
+} from '../services/screener'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
 // Lens has no circulating-supply data, so a market cap cannot be computed. It
@@ -29,22 +37,23 @@ export interface ScreenerQuery {
 const MARKET_CAP_CODE = 'UNSUPPORTED_PARAMETER'
 
 const ALLOWED_SORT_FIELDS = ['volume', 'change_24h', 'price', 'liquidity'] as const
+// The query execution (filters, sorting, cursor pagination, the liquidity
+// definition and the [1, 100] limit clamp) lives in src/services/screener.ts
+// and is shared with the GraphQL `screener` query; this route owns only the
+// HTTP concerns: query-string validation and error shaping.
 
 const numFilter = (name: string) =>
   z.coerce.number({ error: `${name} must be a valid number` }).optional()
 
-export const SCREENER_DEFAULT_LIMIT = 20
-export const SCREENER_MAX_LIMIT = 100
-
 const ScreenerQuerySchema = z
   .object({
-    // Historical behavior: limit is clamped to [1, 100], never rejected.
-    // `GET /screener?limit=500` returns 100 rows, `limit=0` behaves as 1.
+    // Historical behavior: limit is clamped to [1, 100] inside runScreener,
+    // never rejected. `GET /screener?limit=500` returns 100 rows, `limit=0`
+    // behaves as 1.
     limit: z.coerce
       .number({ error: 'limit must be a valid integer' })
       .int({ error: 'limit must be a valid integer' })
-      .default(SCREENER_DEFAULT_LIMIT)
-      .transform((v) => Math.min(SCREENER_MAX_LIMIT, Math.max(1, v))),
+      .default(SCREENER_DEFAULT_LIMIT),
     sortBy: z.string().default('volume'),
     order: z
       .preprocess(
@@ -101,7 +110,7 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       cursor?: string
       limit?: string
     }
-  }>('/screener', async (req, reply) => {
+  }>('/screener', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const log = req.log.child({ component: 'route:screener' })
     try {
       const q = req.query
@@ -345,7 +354,28 @@ export async function registerScreenerRoutes(app: FastifyInstance) {
       const outcome = await screenPairs(req.network ?? activeNetwork, req.query)
       if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
       return { data: outcome.data, nextCursor: outcome.nextCursor, hasMore: outcome.hasMore, total: outcome.total }
+
+      return await runScreener({
+        network: req.network ?? activeNetwork,
+        filters: {
+          volume: parsed.data.volume,
+          change_24h_min: parsed.data.change_24h_min,
+          change_24h_max: parsed.data.change_24h_max,
+          price_min: parsed.data.price_min,
+          price_max: parsed.data.price_max,
+          liquidity: parsed.data.liquidity,
+        },
+        sortBy,
+        order,
+        cursor,
+        limit,
+      })
     } catch (error) {
+      // A malformed cursor is the caller's mistake and gets the same 400 body
+      // the route has always returned for it.
+      if (error instanceof ScreenerCursorError) {
+        return reply.status(400).send({ error: error.message, code: error.code })
+      }
       log.error({ err: error }, 'screener query failed')
       return reply.status(500).send({ error: 'Internal server error' })
     }
