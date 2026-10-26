@@ -138,6 +138,7 @@ export async function registerOracleRoutes(
 ) {
   app.get<{ Params: { asset: string }; Querystring: { network?: string } }>(
     '/compare/:asset',
+    { config: { scope: 'read:prices' } },
     async (req, reply) => {
       const { asset } = req.params
       if (!asset) {
@@ -151,8 +152,21 @@ export async function registerOracleRoutes(
       const network: NetworkName = (requestedNetwork as NetworkName) ?? req.network ?? activeNetwork
 
       const comparison = await compareOracles(assetCode, network, adapters)
+      // CHANGE FROM UPSTREAM (#262): Return 200 with status:"no_data" instead of 404
+      // when both Lens and all oracles have no data. The asset code itself is valid,
+      // the query succeeded — there is just no data yet. A 404 would imply the asset
+      // is invalid or the endpoint does not exist.
       if (!comparison) {
-        return reply.status(404).send({ error: `No price data found for asset ${assetCode}` })
+        return {
+          asset: assetCode,
+          network,
+          lens: null,
+          reflector: null,
+          deviationPct: null,
+          status: 'no_data',
+          fetchedAt: new Date().toISOString(),
+          oracles: [],
+        }
       }
       return comparison
     }
@@ -161,7 +175,7 @@ export async function registerOracleRoutes(
   app.get<{
     Params: { asset: string }
     Querystring: HistoryQuery
-  }>('/compare/:asset/history', async (req, reply) => {
+  }>('/compare/:asset/history', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const parsed = parseHistoryQueryParams(req, reply)
     if (!parsed) return
 
@@ -209,7 +223,7 @@ export async function registerOracleRoutes(
   app.get<{
     Params: { asset: string }
     Querystring: HistoryQuery
-  }>('/compare/:asset/summary', async (req, reply) => {
+  }>('/compare/:asset/summary', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const parsed = parseHistoryQueryParams(req, reply)
     if (!parsed) return
 
