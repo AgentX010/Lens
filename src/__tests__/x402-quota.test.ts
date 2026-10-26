@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const PAYMENT_ADDRESS = 'GPAYMENTADDRESS123456789012345678901234567890123456789012'
@@ -39,7 +38,6 @@ vi.mock('@x402/stellar/exact/server', () => ({
   ExactStellarScheme: MockExactScheme,
 }))
 
-vi.mock('../../x402/metering', () => ({
 vi.mock('../x402/metering', () => ({
   checkQuota: vi.fn(),
   recordUsage: vi.fn(),
@@ -50,11 +48,6 @@ vi.mock('../x402/metering', () => ({
   getQuotaConfig: vi.fn(),
 }))
 
-vi.mock('../../redis', () => ({
-  redis: { get: vi.fn(), multi: vi.fn().mockReturnThis(), on: vi.fn() },
-}))
-
-vi.mock('../../db', () => ({
 vi.mock('../redis', () => ({
   redis: { get: vi.fn(), multi: vi.fn().mockReturnThis(), on: vi.fn() },
 }))
@@ -67,8 +60,6 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { registerX402 } from '../../middleware/x402'
-import { checkQuota, recordUsage, getQuotaConfig } from '../../x402/metering'
 import { registerX402 } from '../middleware/x402'
 import { checkQuota, recordUsage, getQuotaConfig } from '../x402/metering'
 import Fastify from 'fastify'
