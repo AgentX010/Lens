@@ -52,10 +52,18 @@ export const UNDOCUMENTED_ENV_ALLOW_LIST: Record<string, string> = {
     'Optional per-network feature flag override; enabled by default on testnet if reflectorContractId is configured.',
   REFLECTOR_ENABLED_MAINNET:
     'Optional per-network feature flag override; enabled by default on mainnet if reflectorContractId is configured.',
+  BLEND_POLL_INTERVAL_MS_TESTNET:
+    'Optional per-network override for polling interval; shared fallback BLEND_POLL_INTERVAL_MS is documented in .env.example.',
+  BLEND_POLL_INTERVAL_MS_MAINNET:
+    'Optional per-network override for polling interval; shared fallback BLEND_POLL_INTERVAL_MS is documented in .env.example.',
 
   // Legacy single-network fallbacks where paired network-specific variables are documented
   FACILITATOR_FEE_STROOPS:
     'Legacy unsuffixed fallback for testnet; FACILITATOR_FEE_STROOPS_TESTNET and FACILITATOR_FEE_STROOPS_MAINNET are documented in .env.example.',
+  API_KEY_LAST_USED_THROTTLE_SECONDS:
+    'Optional alias fallback; primary variable KEY_LAST_USED_THROTTLE_SECONDS is documented in .env.example.',
+  API_KEY_LAST_USED_THROTTLE_SECONDS:
+    'Optional alias fallback; primary variable KEY_LAST_USED_THROTTLE_SECONDS is documented in .env.example.',
 }
 
 /**

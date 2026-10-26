@@ -72,42 +72,74 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 
 **What Horizon doesn't do:** Horizon's `/trade_aggregations` only covers SDEX. AMM pool prices (derived from reserve ratios) are not aggregated anywhere. Lens fills this gap.
 
+## Venues
+
+<!-- VENUES:START -->
+| Venue | Source | Type | Description |
+|---|---|---|---|
+| SDEX | `SDEX` | Order Book | Stellar's Classic Order Book (SDEX) |
+| AMM | `AMM` | Liquidity Pool | Stellar native AMM liquidity pools (Horizon) |
+| Soroswap | `soroswap_amm` | AMM DEX | Soroswap constant-product automated market maker on Soroban |
+| Aquarius | `aquarius_amm` | Liquidity Pool | Aquarius AMM liquidity pools |
+| DeFindex | `defindex_vault` | Vault | DeFindex yield vaults on Soroban, priced per share |
+| Phoenix | `phoenix_amm` | Liquidity Pool | Phoenix AMM pools on Soroban |
+<!-- VENUES:END -->
+
 ## Endpoints
 
 ### REST
+<!-- ENDPOINTS:START -->
 | Method | Path | Description |
 |---|---|---|
-| GET | `/price/:assetA/:assetB` | Current VWAP, 24h volume, best route |
-| GET | `/price/:assetA/:assetB/route?amount=1000` | Best execution route for a given amount |
-| GET | `/price/:assetA/:assetB/depth?amount=1000` | Simulated order-book depth and execution slippage |
-| GET | `/impact/:assetA/:assetB?thresholds=1,5,10` | Adaptive slippage ladder and threshold crossing sizes |
-| GET | `/book/:assetA/:assetB?depth=0.1&step=0.01&network=testnet` | Aggregated SDEX book and synthetic AMM price ladder with cumulative size and venue provenance |
-| GET | `/price/:assetA/:assetB/history?window=1h` | OHLCV history (`1m`, `5m`, `1h`, `24h`) |
-| GET | `/price/twap/:assetA/:assetB?window=60&sampleInterval=60&method=iqr` | Manipulation-resistant time-weighted average price |
-| GET | `/price/vwap/:assetA/:assetB?window=60&source=SDEX&method=iqr` | Volume-weighted average price |
-| GET | `/candles/:assetA/:assetB?interval=1h&from=…&to=…` | OHLCV candles (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) |
-| GET | `/prices/history?pair=XLM/USDC&from=…&to=…&interval=1m` | Historical 1-minute price snapshots, optionally aggregated (`1m`, `5m`, `1h`); honours `?network=`; `?format=csv` serves the points as `text/csv` (`ts,price,volume`); ~30-day retention |
-| GET | `/pools` | Active AMM pools being watched |
-| GET | `/pairs` | Watched trading pairs |
-| GET | `/volumes/:asset?window=24h&network=testnet` | Cross-venue volume and trade-size concentration (`24h`, `7d`, `30d`) with per-venue breakdown |
-| GET | `/spreads/:asset?window=5m` | Per-venue bid/ask spread, tightest first (`5m`, `15m`, `1h`, `24h`) |
-| GET | `/compare/:asset` | Lens vs configured oracle prices, with per-oracle deviation and availability |
-| GET | `/screener?sortBy=volume&order=desc&limit=20` | Screen pairs by volume, 24h change, liquidity and price |
-| GET | `/benchmark/:asset?target=USD` | Peg-deviation statistics versus a target |
-| GET | `/basket?asset=XLM&asset=USDC&weight=0.6&weight=0.4` | Weighted price of a basket of assets |
-| GET | `/status` | Indexer health |
-| GET | `/snapshot?network=testnet\|mainnet` | Whole-network snapshot: venues, TVL, 24h volume, top pairs, peg readings and data freshness in one cached, timestamped object |
-| GET | `/live` | Liveness probe — no dependency checks (see [`docs/health.md`](docs/health.md)) |
-| GET | `/ready` | Readiness probe — boot complete + dependencies reachable |
-| GET | `/discovery/resources?type=&payTo=&network=&extensions=&limit=&offset=` | Bazaar catalog of x402-discoverable resources (spec: [`bazaar`](https://github.com/x402-foundation/x402/blob/main/specs/extensions/bazaar.md)) |
-| GET | `/usage/me` | Usage and quota for the calling API key (requires `Authorization: Bearer <key>`) |
-| GET | `/supported` | Payment kinds and extensions this facilitator supports |
-| POST | `/verify` | Verify an x402 payment payload |
-| POST | `/settle` | Settle an x402 payment (idempotent — retries replay the stored result) |
-| POST | `/webhooks` | Subscribe to a price-threshold webhook |
-| DELETE | `/webhooks/:id` | Delete a webhook subscription |
-| GET | `/admin/webhook-delivery-failures?limit=25` | Recent permanent webhook failures (requires `X-Admin-Token`) |
-| GET/POST | `/graphql` | GraphQL query/mutation endpoint (GraphiQL IDE at `/graphiql`, docs: [`docs/graphql.md`](docs/graphql.md)) |
+| GET | `/v1/venues/registry` | List registered venues and their network liveness |
+| GET | `/v1/venues` | Venue Share of Volume |
+| GET | `/v1/live` | Liveness probe |
+| GET | `/v1/tvl` | Total Value Locked across Stellar DeFi venues |
+| GET | `/v1/ready` | Readiness probe |
+| GET | `/v1/status` | Get API status and indexer state |
+| GET | `/v1/snapshot` | Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness) |
+| GET | `/v1/price/:assetA/:assetB` | Get aggregated price for a pair |
+| GET | `/v1/price/:assetA/:assetB/route` | Get best swap route for a pair and amount |
+| GET | `/v1/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
+| GET | `/v1/price/:assetA/:assetB/history` | Get price history buckets |
+| GET | `/v1/pools` | Get AMM liquidity pool reserves and spot prices |
+| GET | `/v1/candles/:assetA/:assetB` | Get OHLCV candle data |
+| GET | `/v1/prices/history` | Get historical 1-minute price snapshots |
+| GET | `/v1/pairs` | List all active trading pairs |
+| POST | `/v1/pairs` | Add a new trading pair (Admin only) |
+| GET | `/v1/price/:assetA/:assetB/depth` | Get order-book depth and execution slippage for a pair |
+| GET | `/v1/book/:assetA/:assetB` | Get the aggregated SDEX and AMM price ladder for a pair |
+| GET | `/v1/impact/:assetA/:assetB` | Get an adaptive slippage impact curve for a pair |
+| GET | `/v1/price/twap/:assetA/:assetB` | Get a manipulation-resistant time-weighted average price |
+| GET | `/v1/price/vwap/:assetA/:assetB` | Get a volume-weighted average price |
+| GET | `/v1/volumes/:asset` | Get cross-venue traded volume for an asset |
+| GET | `/v1/spreads/:asset` | Get the tightest per-venue bid/ask spread for an asset |
+| GET | `/v1/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
+| GET | `/v1/dispersion/:assetA/:assetB` | Get venue price dispersion and outlier attribution for a pair |
+| GET | `/v1/dispersion` | List cross-venue dispersion across watched pairs |
+| GET | `/v1/compare/:asset` | Compare Lens prices with every configured external oracle |
+| GET | `/v1/screener` | Screen pairs by volume, change, liquidity and price |
+| GET | `/v1/movers` | Get biggest gainers, biggest losers, and volume movers |
+| GET | `/v1/benchmark/:asset` | Get peg-deviation statistics for an asset against a target |
+| GET | `/v1/basket` | Compute the weighted price of a basket of assets |
+| GET | `/v1/correlation` | Compute price correlation matrix across a basket of assets over a window |
+| GET | `/v1/discovery/resources` | Browse the x402 Bazaar catalog of discoverable resources |
+| GET | `/v1/discovery/search` | Natural language search with ranking and quality evaluation for discoverable resources |
+| POST | `/v1/webhooks` | Subscribe to a price-threshold webhook |
+| DELETE | `/v1/webhooks/:id` | Delete a webhook subscription |
+| GET | `/v1/usage/me` | Get usage and quota for the calling API key |
+| GET | `/v1/usage` | Get usage and quota for the calling API key (alias for /usage/me) |
+| GET | `/v1/supported` | List the payment kinds and extensions this facilitator supports |
+| POST | `/v1/verify` | Verify an x402 payment payload |
+| POST | `/v1/settle` | Settle an x402 payment (idempotent) |
+| GET | `/v1/graphql` | Execute a GraphQL query over HTTP GET |
+| POST | `/v1/graphql` | Execute a GraphQL query, mutation or subscription handshake |
+| GET | `/v1/rates` | Query latest lending and borrow rates across pools |
+<!-- ENDPOINTS:END -->
+
+The table above is generated from [`openapi.yaml`](openapi.yaml) by `npm run openapi:gen`;
+edit the spec rather than the table. CI runs `npm run readme:check` and fails when
+the committed table differs from a fresh generation.
 
 Every non-internal route above has a matching entry in [`openapi.yaml`](openapi.yaml);
 `tests/openapi.test.ts` boots the server and fails if a registered route is
@@ -115,6 +147,8 @@ missing from the spec. Operator-only and non-HTTP routes (`/admin/keys*`,
 `/admin/usage*`, `/admin/webhook-delivery-failures`, `/metrics`, `/ws`, `/graphiql*`) are deliberately excluded via
 the commented allow-list in [`src/openapi/coverage.ts`](src/openapi/coverage.ts).
 In addition, live service responses are verified against their published schemas on a daily schedule (`05:00 UTC`) via `npm run spec:validate-live` — see [docs/live-spec-validation.md](docs/live-spec-validation.md).
+
+All routes are partitioned into three security and CORS tiers (`public`, `credentialed`, and `admin`) with a split CORS policy — see the [Route Classification & CORS Guide](docs/routes.md).
 
 The `?network=testnet\|mainnet` query param (or `x-network` header) selects the
 Stellar network. It is validated on every request — an unrecognised value gets a
@@ -341,6 +375,25 @@ const unsubscribe = client.subscribe(
 > the exact keys being indexed. Only the pair you subscribe to is delivered;
 > updates for other pairs are filtered out server-side. For full protocol handshake details and a raw WebSocket implementation, see [`docs/graphql.md`](docs/graphql.md#live-price-subscriptions-graphql-transport-ws).
 
+## Venue Price Dispersion & Reconciliation
+
+When multiple venues quote the same pair, their prices naturally diverge due to market dynamics and arbitrage opportunities. Lens periodically reconciles quotes across venues to detect unhealthy price dispersion or stale/faulty feeds:
+
+* **Dispersion Metric:** Measured as the **Maximum Absolute Percentage Deviation (MAPD)** from the median:
+  $$\text{deviationPct}_i = \frac{|p_i - \text{median}|}{\text{median}} \times 100$$
+  The venue with the maximum deviation is designated as the outlying venue. The median is chosen because it resists extreme skew from rogue or corrupted prints.
+* **Freshness Window:** Quotes older than `RECONCILIATION_FRESHNESS_SECONDS` (default: `300s` / 5 minutes) are excluded from the median and dispersion calculations, but their names are recorded in `staleVenues` so missing feeds remain visible.
+* **Edge Cases:**
+  * **Single-Venue Pair:** Dispersion is not meaningful. Recorded explicitly with `status: "insufficient_venues"` without computing a fake zero or raising an alert.
+  * **Two-Venue Pair:** Both venues sit equidistant from their midpoint. Deterministic alphabetical tie-breaking picks the outlying venue, and `isAmbiguous: true` is flagged.
+  * **Defensive Math:** Non-positive and non-finite quotes are discarded defensively.
+* **Alerting & Suppression:**
+  * When dispersion exceeds `RECONCILIATION_THRESHOLD_PCT` (default: `2.0%`, with optional per-pair overrides via `RECONCILIATION_PAIR_THRESHOLDS`), an alert is delivered to registered webhooks for the pair and emitted on `priceEmitter` (`dispersion:alert`).
+  * Alerts include the pair, dispersion %, threshold %, and the outlying venue by name.
+  * Cooldown suppression (`RECONCILIATION_ALERT_COOLDOWN_SECONDS`, default: `300s`) prevents duplicate alerts while elevated dispersion persists, automatically resetting once prices converge back within threshold.
+* **Querying Dispersion:**
+  * `GET /dispersion/:assetA/:assetB?from=…&to=…&limit=50&network=testnet`
+  * `GET /dispersion?pair=XLM/USDC&network=mainnet`
 ## MCP server
 
 `npm run mcp:server` starts the Bazaar MCP server ([src/mcp/server.ts](src/mcp/server.ts), wired up in [examples/mcp-server/run.ts](examples/mcp-server/run.ts)). It advertises:
@@ -501,28 +554,95 @@ bytes updates are coalesced to the newest one, past 1 MiB — or congested for 3
 `ws_messages_dropped_total` rather than silent, and one slow client cannot affect
 any other. See [`docs/websocket-backpressure.md`](docs/websocket-backpressure.md).
 
+## Time Model: Observation Time vs. Source Time
+
+Lens separates observation time from source time to avoid conflating local ingestion wall-clock time with native blockchain or exchange timestamps:
+
+* **`observed_at`** (`DateTime`, non-null): The UTC wall-clock timestamp when Lens recorded/ingested the sample.
+* **`source_time`** (`DateTime?`, nullable): The native timestamp reported by the source venue itself. Null when the source has no native timestamp.
+* **`ledger`** (`Int`): Stellar ledger sequence number, kept distinct from timestamp fields.
+
+### Venue Capabilities
+
+Every venue adapter explicitly declares its `sourceTimeCapability`:
+
+| Venue / Adapter | Status | Semantic | Description |
+|---|---|---|---|
+| **SDEX** | `provided` | `ledger_close` | Horizon ledger close time of the executed trade. |
+| **AMM (Trades)** | `provided` | `ledger_close` | Horizon ledger close time of the pool trade. |
+| **AMM (Snapshots)** | `unavailable` | - | State snapshot; `source_time` is `null`. |
+| **Soroswap AMM** | `unavailable` | - | Contract simulation; `source_time` is `null` (never backfilled with wall-clock). |
+| **Aquarius AMM** | `unavailable` | - | API state snapshot; `source_time` is `null` (never backfilled with wall-clock). |
+| **CEX Adapters** | `provided` | `exchange_timestamp` | Exchange-reported trade/ticker timestamp. |
+
+### Bucketing Rationale
+
+All candle aggregation (`/candles`), time windowing, TWAP, and VWAP calculations key on **`observed_at`** (observation time):
+
+* **Cross-venue completeness**: State-only venues (Soroswap, Aquarius, AMM reserve snapshots) have no trade execution timestamps (`source_time = null`). Bucketing on `source_time` would drop or misrepresent state snapshots.
+* **Monotonic reference clock**: `observed_at` provides a single monotonic time reference across all venues, preventing clock skew, reorg gaps, and polling latency skews from distorting aggregate candles.
+
 ## Usage Examples
+
 
 Lens gates `/price`, `/pools`, and `/candles` behind x402 micropayments on Stellar (testnet by default). The `/status` endpoint is free.
 
-### 1. Free health check (no payment)
+### 1. Free health check & status monitoring (`/status`)
+
+`/status` provides a structured, comprehensive health contract separating **process health** (runtime container, memory, uptime) from **data health** (ingestion currency, last ledger, ingest lag).
 
 ```bash
 curl http://localhost:3002/status
-# {
-#   "ok": true,
-#   "network": "testnet",
-#   "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
-#   "lastIndexedLedger": 53842917,
-#   "lastProcessedAt": "2026-05-07T18:45:11.220Z",
-#   "ingestLagSeconds": 4
-# }
 ```
 
-`/status` answers for one network — pass `?network=mainnet` (or the
-`x-network` header) to check the mainnet indexer instead. `ingestLagSeconds` is
-`null` until that network has ingested, and `lastIndexedLedger` is `null` until
-its SDEX ingester has recorded a trade.
+```json
+{
+  "ok": true,
+  "status": "healthy",
+  "network": "testnet",
+  "health": {
+    "process": "healthy",
+    "data": "healthy"
+  },
+  "process": {
+    "uptimeSeconds": 86420,
+    "memoryUsageMb": 18.42,
+    "status": "healthy"
+  },
+  "data": {
+    "lastIndexedLedger": 53842917,
+    "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+    "ingestLagSeconds": 4,
+    "isStale": false
+  },
+  "watchedPairs": ["XLM:native/USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"],
+  "lastIndexedLedger": 53842917,
+  "lastProcessedAt": "2026-05-07T18:45:11.220Z",
+  "ingestLagSeconds": 4
+}
+```
+
+#### Health Differentiation & Paging Conditions
+- **Process Health vs Data Health:** The HTTP status code distinguishes service availability from data staleness.
+  - `HTTP 200 OK` (`status: "healthy"`): Both process runtime and data feeds are functioning normally.
+  - `HTTP 200 OK` (`status: "degraded"`, `health.data: "stale"`): The API server is healthy and responding, but ingestion lag exceeds 300 seconds. **Do not page engineers for intermittent upstream ledger delays.**
+  - `HTTP 200 OK` (`status: "degraded"`, `health.process: "degraded"`): the port answers but boot has not finished, so not every ingester is running yet. Normal for the first seconds of a deploy — gate rollouts on `/ready`, which stays 503 until boot completes, rather than paging on this.
+  - `HTTP 503 Service Unavailable` (`pagingCondition: "DATABASE_DOWN"`): Critical infrastructure failure (e.g. Postgres is down or unreachable). **Uptime monitors should page on HTTP 503.** The body carries `error: "Database unavailable"` and nothing more — `/status` is public, so the driver's own message (which can contain the host, the user and the connection string) goes to the server log only.
+
+#### Monitoring Configuration Example (Datadog / Prometheus / BetterStack)
+Configure your synthetic monitor / HTTP probe:
+```yaml
+# Prometheus Blackbox / Uptime monitor probe example
+probe:
+  target: "http://lens-api.internal:3002/status?network=mainnet"
+  method: "GET"
+  expect_status: 200
+  alert_conditions:
+    - severity: critical # Page on-call
+      condition: "status_code == 503 || body.pagingCondition == 'DATABASE_DOWN'"
+    - severity: warning  # Slack notification only
+      condition: "body.health.data == 'stale' || body.data.ingestLagSeconds > 300"
+```
 
 ### 2. Paid request without `X-PAYMENT` → `402` with payment requirements
 
@@ -697,8 +817,8 @@ npm install
 # 3. Copy env
 cp .env.example .env
 
-# 4. Push database schema
-npm run db:push
+# 4. Apply database migrations
+npm run db:deploy
 
 # 5. Seed the database with fixture data
 npm run seed
@@ -824,6 +944,15 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
 
+## Numeric Precision & Serialization
+
+Lens enforces strict arbitrary-precision numeric aggregation across SQL queries to eliminate floating-point representation artifacts and order-dependent rounding errors:
+
+- **Database Precision**: Declared in `prisma/schema.prisma` as `Decimal(36, 18)` for prices and `Decimal(36, 7)` for volumes (matching Stellar 7-decimal stroop precision).
+- **Exact Aggregations**: All intermediate SQL aggregations (`SUM`, `array_agg`, `MAX`, `MIN`) are computed in PostgreSQL using exact `numeric` arithmetic without `::float` casts inside aggregate expressions.
+- **Edge Serialization**: Values are cast once at the serialization boundary to documented precision:
+  - Prices: up to 18 decimal places (`PRICE_DECIMAL_PLACES = 18`).
+  - Volumes: up to 7 decimal places (`VOLUME_DECIMAL_PLACES = 7`).
 
 ## Rate Limiting & 429 Handling
 

@@ -24,7 +24,12 @@ describe('BazaarMcpServer — server identity', () => {
 
 describe('BazaarMcpServer', () => {
   it('should map signature expiration ledger error to ERR_EXPIRED_AUTHORISATION', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('Transaction signature expired. Signature expiration ledger 123 is less than current ledger 125'));
+    // What the payment client actually surfaces: @x402/fetch rethrows a scheme
+    // failure as `Failed to create payment payload: <cause>`, and the cause for a
+    // lapsed signature is the SDK's own `The transaction has expired`
+    // (@stellar/stellar-sdk lib/webauth/utils.js).
+    const expired = new Error('Failed to create payment payload: The transaction has expired');
+    const mockFetch = vi.fn().mockRejectedValue(expired);
     const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
     // The SDK server doesn't expose the router directly without a client, but we can test the handlePaidCallError method directly,
@@ -80,11 +85,15 @@ describe('BazaarMcpServer', () => {
   });
 
   it('should map 402 rejected error to ERR_PAYMENT_REJECTED', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 402,
-      text: async () => 'Payment Required'
-    });
+    // fetchWithPayment does not throw on a rejected payment: it pays, retries,
+    // and hands back the seller's second response, so this is a real Response
+    // carrying the x402 error body rather than a hand-rolled object.
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ x402Version: 1, error: 'Payment failed: signature invalid' }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
     
     const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
@@ -111,11 +120,19 @@ describe('BazaarMcpServer', () => {
   });
   
   it('should return successfully on a successful call', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ success: true, data: "hello" })
-    });
+    // A settled call is a real Response whose body is the resource's payload and
+    // whose X-PAYMENT-RESPONSE header carries the seller's settlement echo; the
+    // ledger decodes that header, so a stand-in without Headers would skip the
+    // only code path that reads it.
+    const settlement = Buffer.from(
+      JSON.stringify({ success: true, network: 'stellar:testnet' }),
+    ).toString('base64url');
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: 'hello' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'X-PAYMENT-RESPONSE': settlement },
+      }),
+    );
     
     const server = new BazaarMcpServer({ fetchWithPayment: mockFetch, paidCallAllowlist: ['example.com'] });
 
@@ -275,6 +292,152 @@ describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
   });
 });
 
+describe('BazaarMcpServer network & payment key configuration (#412)', () => {
+  function captureHandler(server: any) {
+    let handler: any = null;
+    server.server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) handler = fn;
+    };
+    server.setupHandlers();
+    return handler;
+  }
+
+  it('starts successfully with only a testnet key configured', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const testnetSecret = Keypair.random().secret();
+
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+    const payment = setupMcpPayment({
+      testnetKey: testnetSecret,
+    });
+
+    expect(payment.activeNetworks).toEqual(['stellar:testnet']);
+    expect(payment.mainnetEnabled).toBe(false);
+    expect(payment.warnings).toHaveLength(0);
+
+    const server = new BazaarMcpServer({
+      fetchWithPayment: payment.fetchWithPayment,
+      paidCallAllowlist: ['example.com'],
+    });
+
+    expect(server).toBeDefined();
+  });
+
+  it('requires explicit opt-in for mainnet even when mainnet key is present', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const testnetSecret = Keypair.random().secret();
+    const mainnetSecret = Keypair.random().secret();
+
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+
+    // Without enableMainnet
+    const withoutOptIn = setupMcpPayment({
+      testnetKey: testnetSecret,
+      mainnetKey: mainnetSecret,
+      enableMainnet: false,
+    });
+
+    expect(withoutOptIn.activeNetworks).toEqual(['stellar:testnet']);
+    expect(withoutOptIn.mainnetEnabled).toBe(false);
+    expect(withoutOptIn.info.some(msg => msg.includes('MCP_ENABLE_MAINNET=true'))).toBe(true);
+    expect(withoutOptIn.warnings.some(msg => msg.includes('WARNING'))).toBe(false);
+
+    // With explicit enableMainnet
+    const withOptIn = setupMcpPayment({
+      testnetKey: testnetSecret,
+      mainnetKey: mainnetSecret,
+      enableMainnet: true,
+    });
+
+    expect(withOptIn.activeNetworks).toEqual(['stellar:testnet', 'stellar:pubnet']);
+    expect(withOptIn.mainnetEnabled).toBe(true);
+    expect(withOptIn.warnings.some(msg => msg.includes('WARNING: Mainnet (stellar:pubnet) is enabled!'))).toBe(true);
+  });
+
+  it('starts cleanly with no keys at all and refuses paid_call', async () => {
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+    const payment = setupMcpPayment({});
+
+    expect(payment.activeNetworks).toHaveLength(0);
+    expect(payment.mainnetEnabled).toBe(false);
+    expect(payment.info.some(msg => msg.includes('read-only mode'))).toBe(true);
+
+    // 1. Test when server is constructed with setupMcpPayment's fetchWithPayment (schemes: [])
+    const serverWithEmptySchemes = new BazaarMcpServer({
+      fetchWithPayment: payment.fetchWithPayment,
+      paidCallAllowlist: ['example.com'],
+    });
+    const handler1 = captureHandler(serverWithEmptySchemes);
+
+    // Mock response simulating a 402 challenge demanding testnet
+    const mock402Response = new Response(
+      JSON.stringify({ error: 'Payment required' }),
+      {
+        status: 402,
+        headers: {
+          'Content-Type': 'application/json',
+          'WWW-Authenticate': 'L402 network="stellar:testnet"',
+        },
+      }
+    );
+    const mockFetch402 = vi.fn().mockResolvedValue(mock402Response);
+    (serverWithEmptySchemes as any).fetchWithPayment = mockFetch402;
+
+    // 2. Test when server is constructed without fetchWithPayment
+    const readOnlyServer = new BazaarMcpServer({
+      paidCallAllowlist: ['example.com'],
+    });
+    const handler2 = captureHandler(readOnlyServer);
+
+    const response = await handler2({
+      params: {
+        name: 'paid_call',
+        arguments: { url: 'http://example.com/paid' },
+      },
+    });
+
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_PAYMENT_REJECTED');
+    expect(body.reason).toMatch(/no payment keys configured/i);
+  });
+
+  it('names the missing network in the error response when a payment requires an unconfigured network', async () => {
+    const server = new BazaarMcpServer({
+      fetchWithPayment: vi.fn().mockRejectedValue(
+        new Error('No network/scheme registered for stellar:pubnet')
+      ),
+      paidCallAllowlist: ['example.com'],
+    });
+
+    const handler = captureHandler(server);
+    const response = await handler({
+      params: {
+        name: 'paid_call',
+        arguments: { url: 'http://example.com/paid' },
+      },
+    });
+
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_PAYMENT_REJECTED');
+    expect(body.reason).toContain('stellar:pubnet');
+  });
+
+  it('never logs or leaks secret key values on invalid key errors', async () => {
+    const fakeKey = 'SINVALIDSECRETKEYTHATMUSTNEVERAPPEARINTHELOGSOROUTPUT12345';
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+
+    try {
+      setupMcpPayment({ testnetKey: fakeKey });
+      expect.unreachable('Should have thrown on invalid secret key');
+    } catch (err: any) {
+      expect(err.message).not.toContain(fakeKey);
+      expect(err.message).toContain('stellar:testnet');
+    }
+  });
+});
+
 describe('BazaarMcpServer argument validation (#411)', () => {
   function captureHandlers(server: any) {
     let callHandler: any = null;
@@ -288,6 +451,24 @@ describe('BazaarMcpServer argument validation (#411)', () => {
   }
 
   describe('advertised schema', () => {
+    it('tells the caller what each tool costs and when not to reach for it', async () => {
+      const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
+      const { listHandler } = captureHandlers(server);
+      const res = await listHandler({});
+      const tools = res.tools as Array<{ name: string; description: string }>;
+
+      // A model picks a tool from its description alone. Saying bazaar_search
+      // is free and paid_call spends real funds — and naming the other tool to
+      // reach for instead — is what stops a free lookup being made as a payment.
+      const search = tools.find((t) => t.name === 'bazaar_search')
+      expect(search?.description).toContain('free')
+      expect(search?.description).toContain('paid_call')
+
+      const paid = tools.find((t) => t.name === 'paid_call')
+      expect(paid?.description).toContain('spends real funds')
+      expect(paid?.description).toContain('bazaar_search')
+    })
+
     it('advertises schemas derived from Zod definitions', async () => {
       const server = new BazaarMcpServer({ paidCallAllowlist: ['example.com'] });
       const { listHandler } = captureHandlers(server);
@@ -1045,20 +1226,25 @@ describe('bazaar_search discovery routing', () => {
     expect(JSON.parse(response.content[0].text)).toEqual(body);
   });
 
-  it('maps an empty resources array to ERR_NO_RESULTS', async () => {
+  it('returns an empty resources array as a success, not an error (#414)', async () => {
+    // "I searched and there were none" is a successful search. Handed an error,
+    // an agent retries, rephrases, or reports a failure to the user — none of
+    // which is the right response to an empty set, and all of which cost a paid
+    // call. The empty collection is the answer.
     const { callTool } = searchHarness(() => jsonResponse({ resources: [] }));
 
     const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(body.resources).toEqual([]);
+    // Explicit, not merely absent: the agent can tell "none matched" from a
+    // response whose shape it did not understand.
+    expect(body.isError).toBeUndefined();
+    expect(body.code).toBeUndefined();
   });
 
-  it('maps an empty top-level array to ERR_NO_RESULTS', async () => {
+  it('returns an empty top-level array as a success, not an error (#414)', async () => {
     const { callTool } = searchHarness(() => jsonResponse([]));
 
     const response = await callTool('bazaar_search', {
@@ -1066,12 +1252,9 @@ describe('bazaar_search discovery routing', () => {
       query: 'nothing indexed yet',
     });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(Array.isArray(body) ? body : body.items ?? body.resources).toEqual([]);
   });
 
   it('maps a non-2xx response to ERR_SERVICE_UNREACHABLE with the status in the reason', async () => {
