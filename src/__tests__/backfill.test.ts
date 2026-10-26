@@ -85,7 +85,21 @@ const { mockPrisma, mockPgPool, mockUpsertPricePoints, storedGaps, storedPoints 
         let inserted = 0
         for (const item of data) {
           const id = item.id ?? item.eventId
-          const exists = storedPoints.some(p => p.id === id && p.timestamp.getTime() === item.timestamp.getTime())
+          // createMany({ skipDuplicates }) skips a row violating ANY unique
+          // constraint, so model both the schema declares: the composite
+          // primary key @@id([id, timestamp]) and the identity index
+          // @@unique([network, source, eventId]). Checking only the primary key
+          // made a re-run look non-idempotent, because a point whose timestamp
+          // falls back to `now` lands on a different key each time while the
+          // event id — the thing that actually identifies it — stays the same.
+          const exists = storedPoints.some(
+            p =>
+              (p.id === id && p.timestamp.getTime() === item.timestamp.getTime()) ||
+              (item.eventId != null &&
+                p.network === item.network &&
+                p.source === item.source &&
+                p.eventId === item.eventId),
+          )
           if (skipDuplicates && exists) {
             continue
           }
