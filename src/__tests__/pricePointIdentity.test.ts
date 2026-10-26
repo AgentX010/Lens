@@ -66,9 +66,16 @@ const { fakeTable, mockCreateMany } = vi.hoisted(() => {
 })
 
 vi.mock('pg', () => ({
+  // `on` as well as `query`: src/db.ts subscribes to the pool's 'error' and
+  // 'acquire' events at module load to feed the pool metrics, so a double that
+  // only answers queries makes this file fail to import rather than fail a
+  // test. A fake should look like the thing it replaces.
   Pool: class FakePool {
     query() {
       return Promise.resolve({ rows: [] })
+    }
+    on() {
+      return this
     }
   },
 }))
@@ -79,7 +86,7 @@ vi.mock('@prisma/client', () => ({
   },
 }))
 
-import { upsertPricePoints } from '../db'
+import { upsertPricePoints, synthesizeEventId } from '../db'
 
 /** A full USDC issuer address, kept whole per the repo convention. */
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
@@ -138,6 +145,26 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
     expect(fakeTable.length).toBe(rowsAfterFirstPass)
   })
 
+  it('absorbs a replay of points with neither timestamp nor observedAt supplied (#620)', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-10-17T08:00:00.000Z'))
+      const batch = [point({ eventId: undefined, timestamp: undefined, observedAt: undefined })]
+      expect(await upsertPricePoints(batch, 'testnet')).toBe(1)
+      const firstId = fakeTable[0].eventId
+      expect(firstId).toBeDefined()
+
+      // Replay at a later wall-clock time with identical content
+      vi.setSystemTime(new Date('2026-10-17T08:00:05.000Z'))
+      const replay = [point({ eventId: undefined, timestamp: undefined, observedAt: undefined })]
+      expect(await upsertPricePoints(replay, 'testnet')).toBe(0)
+      expect(fakeTable.length).toBe(1)
+      expect(fakeTable[0].eventId).toBe(firstId)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('absorbs the same batch written by two overlapping ingester instances', async () => {
     // A deploy overlap is just two concurrent writers feeding the same rows
     // from separate processes — same source data, same derived ids.
@@ -167,6 +194,22 @@ describe('replaying a batch never stores the same trade twice (#237)', () => {
 })
 
 describe('synthesized event ids are deterministic from content, never random', () => {
+  it('derives the same id for points with no timestamp across different clock times (#620)', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-10-17T08:00:00.000Z'))
+      const id1 = synthesizeEventId('testnet', point({ eventId: undefined, timestamp: undefined, observedAt: undefined }))
+
+      vi.setSystemTime(new Date('2026-10-26T12:34:56.789Z'))
+      const id2 = synthesizeEventId('testnet', point({ eventId: undefined, timestamp: undefined, observedAt: undefined }))
+
+      expect(id1).toBe(id2)
+      expect(id1).not.toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('fills in a non-null eventId when the source does not supply one', async () => {
     await upsertPricePoints([point({ eventId: undefined })], 'testnet')
     expect(fakeTable[0].eventId).toEqual(expect.any(String))

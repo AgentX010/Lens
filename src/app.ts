@@ -17,7 +17,7 @@ import { registerNetworkSelector } from './middleware/network'
 import { registerHttpMetrics } from './middleware/httpMetrics'
 import { registerETag } from './middleware/etag'
 import { registerWebSocket } from './api/websocket'
-import { registerApiKeyAuth } from './api/auth'
+import { registerApiKeyAuth, registerAdminAuth, isAdminConfigured } from './api/auth'
 import { registerAdminRoutes } from './api/admin'
 import { registerUsageRoutes } from './api/usage'
 import { registerFacilitatorRoutes } from './api/facilitator'
@@ -25,6 +25,7 @@ import { registerPriceRoutes } from './routes/price'
 import { registerVolumeRoutes } from './routes/volumes'
 import { registerBookRoutes } from './routes/book'
 import { registerSpreadsRoutes } from './routes/spreads'
+import { registerRateRoutes } from './routes/rates'
 import { registerBenchmarkRoutes } from './routes/benchmark'
 import { registerOracleRoutes } from './routes/oracle'
 import { registerBasketRoutes } from './routes/basket'
@@ -33,12 +34,17 @@ import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
 import { registerSettleRoute } from './routes/facilitator'
+import { registerApiVersioning, rewriteVersionedApiUrl } from './api/versioning'
+import { registerDispersionRoutes } from './routes/dispersion'
 import { registerHealthRoutes } from './routes/health'
+import { registerTvlRoutes } from './routes/tvl'
 import { registerCachePolicy } from './middleware/cachePolicy'
 import { registerFiatRoutes } from './routes/fiat'
 import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
 import { getMetrics, rate_limit_rejections_total } from './metrics'
 import { loggerOptions, createDestination } from './logger'
+import { isPoolExhaustionError, recordPoolExhaustion } from './db'
+import { createCorsDelegator, type CorsConfig } from './cors'
 
 /**
  * Routes the rate limiter skips.
@@ -50,6 +56,7 @@ import { loggerOptions, createDestination } from './logger'
  */
 const PROBE_PATHS = new Set(['/status', '/live', '/ready'])
 
+
 export interface BuildAppOptions {
   /**
    * Invoked for every route Fastify registers, before the app is ready.
@@ -59,6 +66,10 @@ export interface BuildAppOptions {
    * routes — a duplicated list would drift and defeat the point.
    */
   onRoute?: (routeOptions: RouteOptions) => void
+  /**
+   * Optional CORS configuration override (useful in testing).
+   */
+  corsConfig?: CorsConfig
 }
 
 /**
@@ -85,6 +96,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const app = Fastify({
     logger: { ...loggerOptions(), stream: createDestination() },
     genReqId: () => randomUUID(),
+    // Resolves `/v1/<path>` onto the single bare route that is registered, so
+    // every route answers at both `/v1/...` and its unversioned alias without
+    // being mounted twice. See src/api/versioning.ts.
+    rewriteUrl: rewriteVersionedApiUrl,
   })
 
   app.setErrorHandler((error: any, req, reply) => {
@@ -101,9 +116,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.addHook('onRoute', options.onRoute)
   }
 
-  await app.register(cors, { origin: true })
+  // #268: one policy no longer covers public reads, credentialed calls and the
+  // admin surface. See src/cors.ts.
+  await app.register(cors, { delegator: createCorsDelegator(options.corsConfig) })
   await app.register(registerETag)
   await app.register(compress)
+
+  // Warn callers who use the deprecated unversioned aliases (Deprecation /
+  // Link headers). Registered before the routes so the hook is in place, and
+  // it only reads what rewriteUrl recorded — it never blocks a request.
+  registerApiVersioning(app)
 
   // HTTP request/latency metrics. Registered FIRST, ahead of the network
   // selector, API-key auth, the rate limiter and x402, so that requests those
@@ -127,6 +149,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   } else {
     app.log.warn('[auth] REQUIRE_API_KEY=false — API key authentication disabled')
   }
+
+  // Structural admin authentication hook: intercepts every /admin/* route and
+  // ensures ADMIN_TOKEN is enforced without requiring per-handler manual guards.
+  await app.register(registerAdminAuth)
 
   // Per-key rate quotas: the limit is derived from the authenticated key's
   // metadata (req.apiKey, set by the auth hook above). Unauthenticated/public
@@ -190,8 +216,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
   })
 
-  // Admin endpoints (key issuance/revocation) — gated by ADMIN_TOKEN. Marked
-  // `config.public` so the API-key auth hook skips them.
+  // Admin endpoints (key issuance/revocation) — gated by ADMIN_TOKEN. They
+  // declare `{ admin: true, auth: 'admin' }` (#514), which both steps the
+  // API-key hook aside and puts them behind registerAdminAuth above.
+  if (!isAdminConfigured()) {
+    app.log.warn('ADMIN_TOKEN is not configured; admin routes (/admin/*) are disabled')
+  }
   await registerAdminRoutes(app)
   await registerUsageRoutes(app)
   await app.register(registerFacilitatorRoutes)
@@ -214,6 +244,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerVolumeRoutes(app)
   await registerBookRoutes(app)
   await registerSpreadsRoutes(app)
+  await registerRateRoutes(app)
   await registerBenchmarkRoutes(app)
   await registerOracleRoutes(app)
   await registerBasketRoutes(app)
@@ -223,9 +254,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerVenueRoutes(app)
   await registerFiatRoutes(app)
   await registerSettleRoute(app)
+  await registerDispersionRoutes(app)
   await registerHealthRoutes(app)
+  await registerTvlRoutes(app)
   await registerGraphQL(app)
+
   await registerWebSocket(app)
+
+  // Global error handler: catches unhandled errors, ensuring database pool exhaustion
+  // is diagnosed with distinct logging and metric incrementation rather than a generic 500.
+  app.setErrorHandler((error, req, reply) => {
+    if (isPoolExhaustionError(error)) {
+      recordPoolExhaustion(error, `http:${req.method}:${req.url}`)
+      return reply.status(503).send({
+        error: 'Service Unavailable',
+        message: 'Database connection pool exhausted. Please retry shortly.',
+        code: 'DB_POOL_EXHAUSTED',
+      })
+    }
+    req.log.error(error)
+    return reply.send(error)
+  })
 
   // Prometheus metrics endpoint (un-gated, public — no API key required)
   app.get('/metrics', { config: { public: true } }, async (req, reply) => {

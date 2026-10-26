@@ -26,25 +26,77 @@ datasource db {
 /// scripts/migrations/2026-10-17-price-point-identity.sql, which removes rows
 /// already duplicated on this identity before the index is created.
 model PricePoint {
-  id            String   @default(uuid())
-  network       String   @default("testnet")
-  assetA        String   @map("asset_a")
-  assetB        String   @map("asset_b")
-  pairKey       String   @map("pair_key")
+  id            String    @default(uuid())
+  network       String    @default("testnet")
+  assetA        String    @map("asset_a")
+  assetB        String    @map("asset_b")
+  pairKey       String    @map("pair_key")
   source        String
-  poolId        String?  @map("pool_id")
-  price         Decimal  @db.Decimal(36, 18)
-  baseVolume    Decimal  @map("base_volume") @db.Decimal(36, 7)
-  counterVolume Decimal  @map("counter_volume") @db.Decimal(36, 7)
+  poolId        String?   @map("pool_id")
+  price         Decimal   @db.Decimal(36, 18)
+  baseVolume    Decimal   @map("base_volume") @db.Decimal(36, 7)
+  counterVolume Decimal   @map("counter_volume") @db.Decimal(36, 7)
   ledger        Int
-  timestamp     DateTime
-  eventId       String?  @map("event_id")
+  timestamp     DateTime  // Legacy timestamp column / TimescaleDB hypertable partition key
+  observedAt    DateTime  @default(now()) @map("observed_at")
+  sourceTime    DateTime? @map("source_time")
+  eventId       String?   @map("event_id")
 
   @@id([id, timestamp])
+  @@index([network, pairKey, observedAt(sort: Desc)])
   @@unique([network, source, eventId], map: "price_point_identity")
   @@index([network, pairKey, timestamp(sort: Desc)])
-  @@index([network, pairKey, source, timestamp(sort: Desc)])
+  @@index([network, pairKey, source, observedAt(sort: Desc)])
   @@map("price_points")
+}
+
+/// Latest supply/borrow interest rate an asset earns or costs at one lending
+/// venue, written by the rate ingester (Blend, see L079) and read verbatim by
+/// GET /rates/:asset.
+///
+/// Every row is scoped to a `network` exactly like price_points: mainnet and
+/// testnet rates are separate series and are never pooled. `venue` and `source`
+/// name where the number came from, and `poolId`/`poolName` record the specific
+/// market it came from so a response can attribute each rate instead of
+/// silently averaging a live market with a dead one.
+model LendingRate {
+  id          String   @default(uuid())
+  network     String   @default("testnet")
+  asset       String
+  assetIssuer String?  @map("asset_issuer")
+  /// Lending venue the rate was read from (e.g. "blend").
+  venue       String
+  /// Distinct source tag stored on the row, mirroring price_points.source.
+  source      String
+  /// Contract id of the pool/market the rate came from — never elided.
+  poolId      String   @map("pool_id")
+  poolName    String?  @map("pool_name")
+  /// APY earned by supplying the asset, as a fraction (0.05 == 5%).
+  supplyRate  Decimal  @map("supply_rate") @db.Decimal(18, 8)
+  /// APY charged to borrow the asset, as a fraction (0.07 == 7%).
+  borrowRate  Decimal  @map("borrow_rate") @db.Decimal(18, 8)
+  ledger      Int
+  timestamp   DateTime
+
+  // Reserve state behind the two rates above, written by the Blend ingester.
+  // Nullable because a venue that publishes only rates has nothing to put here.
+  /// Contract id of the asset (Stellar Asset Contract for classic assets).
+  assetAddress  String?  @map("asset_address")
+  /// Annual rates before compounding, as fractions; supplyRate/borrowRate are the APYs.
+  supplyApr     Decimal? @map("supply_apr") @db.Decimal(18, 8)
+  borrowApr     Decimal? @map("borrow_apr") @db.Decimal(18, 8)
+  /// Borrowed / supplied, as a fraction (0.5 == 50%).
+  utilization   Decimal? @db.Decimal(18, 8)
+  totalSupply   Decimal? @map("total_supply") @db.Decimal(36, 7)
+  totalBorrowed Decimal? @map("total_borrowed") @db.Decimal(36, 7)
+  /// Liquidity left to borrow (totalSupply - totalBorrowed).
+  reserves      Decimal? @db.Decimal(36, 7)
+
+  @@id([id, timestamp])
+  @@index([network, asset, timestamp(sort: Desc)])
+  @@index([network, asset, venue, timestamp(sort: Desc)])
+  @@index([network, poolId, asset, timestamp(sort: Desc)])
+  @@map("lending_rates")
 }
 
 model PoolSnapshot {
@@ -299,12 +351,36 @@ model ApiKey {
   revokedAt        DateTime? @map("revoked_at")
   expiresAt        DateTime? @map("expires_at")
   createdAt        DateTime  @default(now()) @map("created_at")
+  lastUsedAt       DateTime? @map("last_used_at")
   monthlyQuotaCents Int?     @default(10000) @map("monthly_quota_cents")
   dailyQuotaCents  Int?      @default(500) @map("daily_quota_cents")
   overagePolicy    String    @default("block") @map("overage_policy")
   scopes           String[]  @default([])
 
   @@map("api_keys")
+}
+
+model VenueDispersion {
+  id               String   @id @default(uuid())
+  network          String   @default("testnet")
+  pairKey          String   @map("pair_key")
+  timestamp        DateTime @default(now())
+  venueCount       Int      @map("venue_count")
+  median           Decimal? @db.Decimal(36, 18)
+  dispersionPct    Decimal? @map("dispersion_pct") @db.Decimal(10, 4)
+  spreadBps        Decimal? @map("spread_bps") @db.Decimal(10, 2)
+  minPrice         Decimal? @map("min_price") @db.Decimal(36, 18)
+  maxPrice         Decimal? @map("max_price") @db.Decimal(36, 18)
+  outlierVenue     String?  @map("outlier_venue")
+  outlierDeviation Decimal? @map("outlier_deviation") @db.Decimal(10, 4)
+  status           String   @default("ok")
+  isAmbiguous      Boolean  @default(false) @map("is_ambiguous")
+  freshVenues      String[] @default([]) @map("fresh_venues")
+  staleVenues      String[] @default([]) @map("stale_venues")
+  venues           Json?
+
+  @@index([network, pairKey, timestamp(sort: Desc)])
+  @@map("venue_dispersions")
 }
 
 /// One value Lens put on chain through its SEP-40 feed (#222).
