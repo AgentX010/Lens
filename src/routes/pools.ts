@@ -2,15 +2,22 @@ import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { poolsResponseSchema } from '../api/schemas'
+import { formatDecimal, resolveDecimalFormat } from '../utils/decimals'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
+/**
+ * One pool's newest snapshot, straight from the DB. `numeric` columns arrive as
+ * strings — that is what lets `?decimalFormat=string` hand back the exact value
+ * the ledger stored rather than a float-rounded one — so callers decide how to
+ * present them via {@link formatDecimal}.
+ */
 export interface PoolSnapshotRow {
   pool_id: string
   asset_a: string
   asset_b: string
-  reserve_a: number | null
-  reserve_b: number | null
-  spot_price: number | null
+  reserve_a: string | null
+  reserve_b: string | null
+  spot_price: string | null
   fee_bp: number | null
   timestamp: Date
 }
@@ -79,7 +86,7 @@ export async function listPools(network: NetworkName, page: ListPoolsPage = {}):
           WHERE ids.pool_id IS NOT NULL
        )
        SELECT l.pool_id, l.asset_a, l.asset_b,
-              l.reserve_a::float, l.reserve_b::float, l.spot_price::float, l.fee_bp, l.timestamp
+              l.reserve_a::numeric, l.reserve_b::numeric, l.spot_price::numeric, l.fee_bp, l.timestamp
          FROM ids
         CROSS JOIN LATERAL (
               SELECT * FROM pool_snapshots s
@@ -114,6 +121,7 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
   app.get(
     '/pools',
     {
+      config: { scope: 'read:prices' },
       schema: {
         response: {
           200: poolsResponseSchema,
@@ -124,9 +132,27 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const outcome = await listPools(req.network ?? activeNetwork)
+      const network = req.network ?? activeNetwork
+      const decimalFormat = resolveDecimalFormat(req)
+      if (decimalFormat === 'string') {
+        reply.header('x-decimal-format', 'string')
+      }
+
+      const outcome = await listPools(network)
       if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
-      return { pools: outcome.pools }
+
+      return {
+        pools: outcome.pools.map(r => ({
+          pool_id: r.pool_id,
+          asset_a: r.asset_a,
+          asset_b: r.asset_b,
+          reserve_a: formatDecimal(r.reserve_a, decimalFormat),
+          reserve_b: formatDecimal(r.reserve_b, decimalFormat),
+          spot_price: formatDecimal(r.spot_price, decimalFormat),
+          fee_bp: r.fee_bp !== null && r.fee_bp !== undefined ? parseInt(String(r.fee_bp), 10) : null,
+          timestamp: r.timestamp,
+        })),
+      }
     }
   )
 }

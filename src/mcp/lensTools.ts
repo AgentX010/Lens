@@ -1,311 +1,572 @@
-import { activeNetwork, type NetworkName } from '../config.js'
-import { getActivePairs } from '../pairsRegistry.js'
-import { listPairs } from '../routes/pairs.js'
-import { listPools, type PoolSnapshotRow } from '../routes/pools.js'
-import { screenPairs } from '../routes/screener.js'
-import type { AssetId } from '../types.js'
+import { MCP_ERROR_CODES } from './codes.js'
 import type { McpErrorCode } from './codes.js'
+import {
+  LENS_GET_POOLS_ARGUMENTS_SCHEMA,
+  LENS_LIST_PAIRS_ARGUMENTS_SCHEMA,
+  LENS_SCREEN_PAIRS_ARGUMENTS_SCHEMA,
+  formatZodError,
+  zodToToolInputSchema,
+} from './toolSchemas.js'
+import type {
+  LensGetPoolsArguments,
+  LensListPairsArguments,
+  LensScreenPairsArguments,
+} from './toolSchemas.js'
+import type { NetworkName } from '../config.js'
+import type { AssetId } from '../types.js'
+import type { ListPairsOutcome, PairWithLatest } from '../routes/pairs.js'
+import type { ListPoolsOutcome, PoolSnapshotRow } from '../routes/pools.js'
+import type { ScreenerFilters, ScreenerPage, ScreenerRow } from '../services/screener.js'
 
 /**
- * The Lens-native MCP tools — `lens_list_pairs`, `lens_get_pools` and
- * `lens_screen_pairs` — over the exact implementations the REST routes use
- * (`listPairs`, `listPools`, `screenPairs`), so a page from a tool is a page
- * from the corresponding route.
+ * #409 — an agent that can read a price still cannot ask what is quotable, what
+ * liquidity stands behind it, or what is moving, because REST answered all three
+ * and MCP answered none. Guessing an asset code is how an agent ends up
+ * confidently asking about an asset that does not exist.
  *
- * An agent cannot discover what to ask a price about without the pairs list,
- * and an unbounded answer spends its context on it, so every tool returns a
- * bounded page plus an opaque `nextCursor`: pass it back as `cursor` for the
- * next page. `hasMore` says whether one exists.
+ * These three tools are the pure half of those answers: argument shape, paging,
+ * issuer enrichment and the refusal vocabulary. The reads themselves are
+ * injected ({@link LensDataQueries}) and are the very functions the REST routes
+ * call, so a page from a tool cannot drift from a page over HTTP — the same
+ * split `priceTool.ts` makes for `lens_get_price`, and for the same reason: the
+ * stdio server must not acquire a database to exist.
  */
 
-const PAIRS_PAGE_SIZE = 50
-const POOLS_PAGE_SIZE = 50
-const MAX_PAGE_SIZE = 100
+export const LENS_LIST_PAIRS_TOOL_NAME = 'lens_list_pairs'
+export const LENS_GET_POOLS_TOOL_NAME = 'lens_get_pools'
+export const LENS_SCREEN_PAIRS_TOOL_NAME = 'lens_screen_pairs'
 
-interface LensToolDefinition {
-  name: string
-  description: string
-  inputSchema: {
-    type: 'object'
-    properties: Record<string, unknown>
-    additionalProperties: false
+export type LensDataToolName =
+  | typeof LENS_LIST_PAIRS_TOOL_NAME
+  | typeof LENS_GET_POOLS_TOOL_NAME
+  | typeof LENS_SCREEN_PAIRS_TOOL_NAME
+
+const LENS_DATA_TOOL_NAMES: readonly LensDataToolName[] = [
+  LENS_LIST_PAIRS_TOOL_NAME,
+  LENS_GET_POOLS_TOOL_NAME,
+  LENS_SCREEN_PAIRS_TOOL_NAME,
+]
+
+export function isLensDataToolName(name: string): name is LensDataToolName {
+  return (LENS_DATA_TOOL_NAMES as readonly string[]).includes(name)
+}
+
+/** A page request the tool has settled: a bound to honour and where to resume. */
+export interface LensToolPaging {
+  /** Page size for a caller who asked for none — operator configuration. */
+  defaultLimit: number
+  /** Ceiling; an ask over it is clamped, not honoured (#416's rule). */
+  maxLimit: number
+}
+
+/** An asset exactly as Stellar defines it: code plus the issuer that gives it meaning. */
+export interface AssetRef {
+  code: string
+  issuer: string | null
+}
+
+/**
+ * The reads behind the three tools, supplied by the process that hosts them.
+ * Each returns the same shape the REST route renders from, so parity is
+ * structural rather than something a test has to hope for.
+ */
+export interface LensDataQueries {
+  /** Network the caller gets when they name none — the deployment's own default. */
+  readonly activeNetwork: NetworkName
+  listPairs(network: NetworkName, page: { limit?: number; cursor?: string }): Promise<ListPairsOutcome>
+  listPools(network: NetworkName, page: { limit?: number; cursor?: string }): Promise<ListPoolsOutcome>
+  /** Pairs watched on that network, issuers intact — what a pool row's bare codes are resolved against. */
+  watchedPairs(network: NetworkName): readonly { assetA: AssetId; assetB: AssetId }[]
+  /**
+   * The screener. Rejects are returned rather than thrown, so an unsupported
+   * filter or an undecodable cursor reaches the agent as the same message the
+   * REST route answers with; a database that is unreachable still throws.
+   * `limit` comes back as the page size actually run — the screener bounds its
+   * own pages, tighter than the tool ceiling, and the agent is told which one
+   * it got.
+   */
+  screen(request: {
+    network: NetworkName
+    filters?: ScreenerFilters
+    sortBy?: string
+    order?: string
+    cursor?: string
+    limit?: number
+    /** Present at all means the caller asked for market cap, which cannot be computed. */
+    marketCapAsked: boolean
+  }): Promise<ScreenerScreenOutcome>
+}
+
+export type ScreenerScreenOutcome =
+  | { ok: true; page: ScreenerPage; limit: number }
+  | { ok: false; error: string }
+
+export type LensPairEntry = {
+  pairKey: string
+  assetA: AssetRef
+  assetB: AssetRef
+  latestPrice: number | null
+  lastUpdated: string | null
+}
+
+export type LensPairsPage = {
+  network: NetworkName
+  pairs: LensPairEntry[]
+  /** The page size actually honoured — clamped when the ask exceeded the ceiling. */
+  limit: number
+  nextCursor: string | null
+  hasMore: boolean
+}
+
+export type LensPoolEntry = {
+  pool_id: string
+  /** The codes the AMM stores on the row, unchanged. */
+  asset_a: string
+  asset_b: string
+  /** The same assets with the issuer that defines them, or null when this network watches no such pair. */
+  assetA: AssetRef
+  assetB: AssetRef
+  reserve_a: number | null
+  reserve_b: number | null
+  spot_price: number | null
+  fee_bp: number | null
+  timestamp: string
+}
+
+export type LensPoolsPage = {
+  network: NetworkName
+  pools: LensPoolEntry[]
+  limit: number
+  nextCursor: string | null
+  hasMore: boolean
+}
+
+export type LensScreenerRow = {
+  pair_key: string
+  volume: number
+  price: number
+  change_24h: number
+  liquidity: number
+  liquidity_unit: string
+}
+
+export type LensScreenerPage = {
+  network: NetworkName
+  data: LensScreenerRow[]
+  /** The page size the screener actually ran, which can be below the asked-for limit. */
+  limit: number
+  nextCursor: string | null
+  hasMore: boolean
+  /** Always null: the screener ranks a window, it does not count a population. */
+  total: null
+}
+
+export type LensDataToolFailure = { code: McpErrorCode; reason: string }
+
+export type LensDataToolOutcome =
+  | { ok: true; result: LensPairsPage | LensPoolsPage | LensScreenerPage }
+  | { ok: false; error: LensDataToolFailure }
+
+const VALID_NETWORKS: readonly NetworkName[] = ['testnet', 'mainnet']
+
+function assetRef(asset: AssetId): AssetRef {
+  return { code: asset.code, issuer: asset.issuer ?? null }
+}
+
+function pairEntry(p: PairWithLatest): LensPairEntry {
+  return {
+    pairKey: p.pairKey,
+    assetA: assetRef(p.assetA),
+    assetB: assetRef(p.assetB),
+    latestPrice: p.latestPrice,
+    // Dates do not survive JSON; an agent needs to read the age, not infer it.
+    lastUpdated: p.lastUpdated ? new Date(p.lastUpdated).toISOString() : null,
   }
 }
 
-const networkParam = {
-  type: 'string',
-  enum: ['testnet', 'mainnet'],
-  description: `Stellar network to read. Defaults to this deployment's active network (${activeNetwork}).`,
+const pagingProperties = {
+  network: {
+    type: 'string',
+    enum: [...VALID_NETWORKS],
+    description: 'Stellar network to read. Defaults to the network this server is configured for.',
+  },
+  limit: {
+    type: 'integer',
+    minimum: 1,
+    description:
+      'Items to return in this page. Clamped to the server ceiling rather than refused; check "limit" in the result for the size you actually got.',
+  },
+  cursor: {
+    type: 'string',
+    description:
+      'Opaque token from a previous result\'s "nextCursor". Do not construct or guess one, and do not treat it as an offset.',
+  },
+} as const
+
+const pageFields = {
+  limit: { type: 'integer', minimum: 1 },
+  nextCursor: { type: ['string', 'null'] },
+  hasMore: { type: 'boolean' },
+} as const
+
+function assetRefSchema() {
+  return {
+    type: 'object',
+    properties: {
+      code: { type: 'string' },
+      issuer: { type: ['string', 'null'] },
+    },
+    required: ['code', 'issuer'],
+    additionalProperties: false,
+  }
 }
 
-const pairsCursorParam = {
-  type: 'string',
-  description:
-    'Opaque cursor from the nextCursor of a previous page. Omit it for the first page; pass nextCursor back as cursor while hasMore is true.',
-}
+const PAGING_NOTICE =
+  'Results are one page: when "hasMore" is true, pass "nextCursor" back as the cursor argument for the rest. '
 
-export function lensToolDefinitions(): LensToolDefinition[] {
+const ISSUER_NOTICE =
+  'Every asset is carried as {code, issuer} with the issuer spelled out in full — a Stellar asset code ' +
+  'is not unique, anyone can issue "USDC", so an issuer is part of the identity, never an optional detail. '
+
+export function lensDataToolDefinitions() {
   return [
     {
-      name: 'lens_list_pairs',
+      name: LENS_LIST_PAIRS_TOOL_NAME,
       description:
-        'List the trading pairs Lens watches on one Stellar network, each with its latest price and last update time. ' +
-        'This is the discovery tool: call it first to find out which pairs exist and which asset codes and issuers are ' +
-        'quotable — every asset is returned as {code, issuer} with the issuer\'s full key, never shortened. ' +
-        'Results are a bounded page; while hasMore is true, pass nextCursor as cursor to get the next page. ' +
-        'Use lens_screen_pairs instead when you want pairs ranked or filtered by volume, liquidity, 24h change or price, ' +
-        'and lens_get_pools when you need the AMM liquidity behind a pair.',
-      inputSchema: {
+        'List the asset pairs this Lens deployment watches, one page at a time, with the latest price and ' +
+        'its age for each. This is the discovery tool: call it before lens_get_price to learn what can ' +
+        'actually be quoted, and use the pair keys and full issuers it returns verbatim in that call. ' +
+        'It answers "what exists here" — not "which pair is moving" (that is lens_screen_pairs, which ' +
+        'filters and ranks) and not "what liquidity is behind a pair" (that is lens_get_pools). ' +
+        PAGING_NOTICE +
+        ISSUER_NOTICE +
+        'A pair with no data on this network comes back with a null price and null lastUpdated rather than ' +
+        'being dropped, so an empty listing means nothing is watched on that network.',
+      inputSchema: zodToToolInputSchema(LENS_LIST_PAIRS_ARGUMENTS_SCHEMA),
+      outputSchema: {
         type: 'object',
         properties: {
-          network: networkParam,
-          limit: {
-            type: 'integer',
-            minimum: 1,
-            maximum: MAX_PAGE_SIZE,
-            default: PAIRS_PAGE_SIZE,
-            description: `Page size, 1 to ${MAX_PAGE_SIZE}. Defaults to ${PAIRS_PAGE_SIZE}.`,
+          network: { type: 'string', enum: [...VALID_NETWORKS] },
+          pairs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                pairKey: { type: 'string' },
+                assetA: assetRefSchema(),
+                assetB: assetRefSchema(),
+                latestPrice: { type: ['number', 'null'] },
+                lastUpdated: { type: ['string', 'null'] },
+              },
+              required: ['pairKey', 'assetA', 'assetB', 'latestPrice', 'lastUpdated'],
+              additionalProperties: false,
+            },
           },
-          cursor: pairsCursorParam,
+          ...pageFields,
         },
+        required: ['network', 'pairs', 'limit', 'nextCursor', 'hasMore'],
         additionalProperties: false,
       },
     },
     {
-      name: 'lens_get_pools',
+      name: LENS_GET_POOLS_TOOL_NAME,
       description:
-        'List the AMM liquidity pools Lens indexes on one Stellar network — each pool\'s reserves, spot price, fee and ' +
-        'latest snapshot time — to see the liquidity behind a pair or the whole market. ' +
-        'Every pool carries the raw asset codes (asset_a/asset_b) and full asset ids (assetA/assetB) with the complete ' +
-        'issuer key, so a pool\'s assets are never ambiguous. Results are a bounded page; while hasMore is true, pass ' +
-        'nextCursor as cursor to get the next page. Use lens_list_pairs to discover pairs and lens_screen_pairs to rank ' +
-        'them by activity.',
-      inputSchema: {
+        'List the AMM liquidity pools Lens ingests on one network, one page at a time, with each pool\'s ' +
+        'newest reserves, spot price and fee. Use it to judge whether a price is deep enough to act on — ' +
+        'how much liquidity stands behind a pair — after lens_list_pairs has told you the pair exists. ' +
+        'It is not a discovery tool for pairs (use lens_list_pairs) and not a market mover list (use ' +
+        'lens_screen_pairs). ' +
+        PAGING_NOTICE +
+        ISSUER_NOTICE +
+        'The AMM stores only asset codes on a pool row, so the issuers attached here are the ones from the ' +
+        'watched pair that carries those codes; when no watched pair does, issuer is null rather than a ' +
+        'guessed one. Pages are ordered by pool id.',
+      inputSchema: zodToToolInputSchema(LENS_GET_POOLS_ARGUMENTS_SCHEMA),
+      outputSchema: {
         type: 'object',
         properties: {
-          network: networkParam,
-          limit: {
-            type: 'integer',
-            minimum: 1,
-            maximum: MAX_PAGE_SIZE,
-            default: POOLS_PAGE_SIZE,
-            description: `Page size, 1 to ${MAX_PAGE_SIZE}. Defaults to ${POOLS_PAGE_SIZE}.`,
+          network: { type: 'string', enum: [...VALID_NETWORKS] },
+          pools: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                pool_id: { type: 'string' },
+                asset_a: { type: 'string' },
+                asset_b: { type: 'string' },
+                assetA: assetRefSchema(),
+                assetB: assetRefSchema(),
+                reserve_a: { type: ['number', 'null'] },
+                reserve_b: { type: ['number', 'null'] },
+                spot_price: { type: ['number', 'null'] },
+                fee_bp: { type: ['integer', 'null'] },
+                timestamp: { type: 'string' },
+              },
+              required: [
+                'pool_id', 'asset_a', 'asset_b', 'assetA', 'assetB',
+                'reserve_a', 'reserve_b', 'spot_price', 'fee_bp', 'timestamp',
+              ],
+              additionalProperties: false,
+            },
           },
-          cursor: pairsCursorParam,
+          ...pageFields,
         },
+        required: ['network', 'pools', 'limit', 'nextCursor', 'hasMore'],
         additionalProperties: false,
       },
     },
     {
-      name: 'lens_screen_pairs',
+      name: LENS_SCREEN_PAIRS_TOOL_NAME,
       description:
-        'Screen and rank the watched pairs by 24h volume, price change, liquidity or price — the "what is moving" view, ' +
-        'sorted and filtered server-side. Use this instead of lens_list_pairs when you want the top or filtered pairs ' +
-        'rather than the full catalogue, and lens_get_pools for the reserves behind a specific pair. ' +
-        'Results are a bounded page; while hasMore is true, pass nextCursor as cursor to get the next page. ' +
-        'market_cap is not supported — use liquidity instead.',
-      inputSchema: {
+        'Rank watched pairs by 24h activity and filter them by volume, price, change or liquidity: the ' +
+        '"what is moving" view. Use it to shortlist candidates from a population, then lens_get_price on a ' +
+        'specific pair for the quote and lens_get_pools for the depth behind it. Do not use it to enumerate ' +
+        'what exists (that is lens_list_pairs, which is unfiltered and lists quiet pairs too). ' +
+        'sortBy is volume, change_24h, price or liquidity (default volume); order is asc or desc ' +
+        '(default desc). market_cap is refused: Lens has no circulating-supply data to compute it from, so ' +
+        'filter liquidity instead. ' +
+        PAGING_NOTICE +
+        'Rows key on pair_key, which already names each asset\'s issuer in full, so a screen result can be ' +
+        'passed straight to lens_get_price without rebuilding the asset.',
+      inputSchema: zodToToolInputSchema(LENS_SCREEN_PAIRS_ARGUMENTS_SCHEMA),
+      outputSchema: {
         type: 'object',
         properties: {
-          network: networkParam,
-          volume: { type: 'number', description: 'Minimum 24h volume.' },
-          change_24h_min: { type: 'number', description: 'Minimum 24h price change in percent.' },
-          change_24h_max: { type: 'number', description: 'Maximum 24h price change in percent.' },
-          price_min: { type: 'number', description: 'Minimum price.' },
-          price_max: { type: 'number', description: 'Maximum price.' },
-          liquidity: { type: 'number', description: 'Minimum liquidity.' },
-          sortBy: {
-            type: 'string',
-            enum: ['volume', 'change_24h', 'price', 'liquidity'],
-            description: 'Field to sort by. Defaults to volume.',
+          network: { type: 'string', enum: [...VALID_NETWORKS] },
+          data: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                pair_key: { type: 'string' },
+                volume: { type: 'number' },
+                price: { type: 'number' },
+                change_24h: { type: 'number' },
+                liquidity: { type: 'number' },
+                liquidity_unit: { type: 'string' },
+              },
+              required: ['pair_key', 'volume', 'price', 'change_24h', 'liquidity', 'liquidity_unit'],
+              additionalProperties: false,
+            },
           },
-          order: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction. Defaults to desc.' },
-          limit: {
-            type: 'integer',
-            minimum: 1,
-            maximum: MAX_PAGE_SIZE,
-            description: `Page size, 1 to ${MAX_PAGE_SIZE}. Defaults to 20.`,
-          },
-          cursor: pairsCursorParam,
+          ...pageFields,
+          total: { type: 'null' },
         },
+        required: ['network', 'data', 'limit', 'nextCursor', 'hasMore', 'total'],
         additionalProperties: false,
       },
     },
   ]
 }
 
-export type LensToolName = 'lens_list_pairs' | 'lens_get_pools' | 'lens_screen_pairs'
-
-export function isLensToolName(name: string): name is LensToolName {
-  return name === 'lens_list_pairs' || name === 'lens_get_pools' || name === 'lens_screen_pairs'
+function failure(code: McpErrorCode, reason: string): LensDataToolOutcome {
+  return { ok: false, error: { code, reason } }
 }
-
-// ── Argument parsing ──────────────────────────────────────────────────────────
-
-type ToolArguments = Record<string, unknown> | undefined
-
-function parseNetworkArg(args: ToolArguments): { network: NetworkName } | { error: string } {
-  const raw = args?.network
-  if (raw === undefined) return { network: activeNetwork }
-  if (raw === 'testnet' || raw === 'mainnet') return { network: raw }
-  return { error: 'network must be one of: testnet, mainnet' }
-}
-
-function parseLimitArg(raw: unknown, fallback: number): { limit: number } | { error: string } {
-  if (raw === undefined) return { limit: fallback }
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
-    return { error: `limit must be an integer between 1 and ${MAX_PAGE_SIZE}` }
-  }
-  return { limit: Math.min(raw, MAX_PAGE_SIZE) }
-}
-
-function parseCursorArg(raw: unknown): { cursor?: string } | { error: string } {
-  if (raw === undefined) return {}
-  if (typeof raw !== 'string' || raw.length === 0) return { error: 'cursor must be a non-empty string' }
-  return { cursor: raw }
-}
-
-// The screener implementation parses string values (it shares them with the
-// REST querystring), so tool numbers cross over as strings and the clamping
-// and validation stay identical on both surfaces.
-function stringifyScreenerArgs(args: ToolArguments): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {}
-  for (const key of [
-    'volume',
-    'change_24h_min',
-    'change_24h_max',
-    'price_min',
-    'price_max',
-    'liquidity',
-    'sortBy',
-    'order',
-    'limit',
-    'cursor',
-  ]) {
-    const raw = args?.[key]
-    if (raw !== undefined) out[key] = String(raw)
-  }
-  return out
-}
-
-// ── Response helpers ──────────────────────────────────────────────────────────
-
-// A type alias (not an interface) so it carries the implicit index signature
-// the MCP SDK's ServerResult accepts.
-type McpToolResponse = {
-  content: { type: 'text'; text: string }[]
-  isError?: true
-}
-
-function textResponse(payload: unknown): McpToolResponse {
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] }
-}
-
-function errorResponse(code: McpErrorCode, reason: string): McpToolResponse {
-  return {
-    content: [{ type: 'text', text: JSON.stringify({ isError: true, code, reason }) }],
-    isError: true,
-  }
-}
-
-// ── Pools: resolve full asset ids for a pool row ──────────────────────────────
 
 /**
- * pool_snapshots stores bare asset codes, but a code alone does not identify a
- * Stellar asset — anyone can issue "USDC". The pool was snapshotted while its
- * pair was watched, so the watched-pairs registry is where the issuer lives.
- * A pool whose pair is no longer watched falls back to a null issuer rather
- * than a guessed one.
+ * The server hands the caller's object straight to the handler, so a bad
+ * `network` or an argument type the schema never saw must be settled here rather
+ * than reach the database and come back as something worse.
  */
-function resolvePoolAssets(row: PoolSnapshotRow): { assetA: AssetId; assetB: AssetId } {
-  const pair = getActivePairs().find(
+function readNetwork(raw: unknown, queries: LensDataQueries): NetworkName | LensDataToolFailure {
+  if (raw === undefined) return queries.activeNetwork
+  if (typeof raw !== 'string' || !(VALID_NETWORKS as readonly string[]).includes(raw as NetworkName)) {
+    return {
+      code: MCP_ERROR_CODES.ERR_BAD_REQUEST,
+      reason: `network must be one of ${VALID_NETWORKS.join(' or ')}, got ${JSON.stringify(raw)}`,
+    }
+  }
+  return raw as NetworkName
+}
+
+function isFailure(value: NetworkName | LensDataToolFailure): value is LensDataToolFailure {
+  return typeof value === 'object' && value !== null && 'code' in value
+}
+
+/**
+ * Clamp rather than refuse: an agent that asks for 500 pairs gets a small page
+ * and a cursor, which is a better outcome than an error it has to understand.
+ */
+function resolveLimit(limit: number | undefined, paging: LensToolPaging): number {
+  return limit !== undefined ? Math.min(limit, paging.maxLimit) : paging.defaultLimit
+}
+
+export async function readLensPairsPage(
+  args: LensListPairsArguments,
+  queries: LensDataQueries,
+  paging: LensToolPaging
+): Promise<LensDataToolOutcome> {
+  const network = readNetwork(args.network, queries)
+  if (isFailure(network)) return failure(network.code, network.reason)
+
+  const limit = resolveLimit(args.limit, paging)
+  const outcome = await queries.listPairs(network, { limit, cursor: args.cursor })
+  if (!outcome.ok) return failure(MCP_ERROR_CODES.ERR_BAD_REQUEST, outcome.error)
+
+  return {
+    ok: true,
+    result: {
+      network,
+      pairs: outcome.pairs.map(pairEntry),
+      limit,
+      nextCursor: outcome.nextCursor,
+      hasMore: outcome.hasMore,
+    },
+  }
+}
+
+/**
+ * Attach the issuer a pool row does not store. The AMM snapshot carries bare
+ * codes; the watched pair that names those codes is what says which USDC this is.
+ * A pool whose codes match no watched pair keeps null issuers rather than
+ * borrowing the only one on hand — a wrong issuer is a different asset.
+ */
+export function resolvePoolAssets(
+  row: Pick<PoolSnapshotRow, 'asset_a' | 'asset_b'>,
+  pairs: readonly { assetA: AssetId; assetB: AssetId }[]
+): { assetA: AssetRef; assetB: AssetRef } {
+  const match = pairs.find(
     p =>
       (p.assetA.code === row.asset_a && p.assetB.code === row.asset_b) ||
       (p.assetA.code === row.asset_b && p.assetB.code === row.asset_a)
   )
-  const assetA: AssetId = pair
-    ? pair.assetA.code === row.asset_a
-      ? pair.assetA
-      : pair.assetB
-    : { code: row.asset_a, issuer: null }
-  const assetB: AssetId = pair
-    ? pair.assetB.code === row.asset_b
-      ? pair.assetB
-      : pair.assetA
-    : { code: row.asset_b, issuer: null }
-  return { assetA, assetB }
-}
 
-// ── Tool handlers ─────────────────────────────────────────────────────────────
-
-async function handleListPairs(args: ToolArguments): Promise<McpToolResponse> {
-  const network = parseNetworkArg(args)
-  if ('error' in network) return errorResponse('ERR_BAD_REQUEST', network.error)
-  const limit = parseLimitArg(args?.limit, PAIRS_PAGE_SIZE)
-  if ('error' in limit) return errorResponse('ERR_BAD_REQUEST', limit.error)
-  const cursor = parseCursorArg(args?.cursor)
-  if ('error' in cursor) return errorResponse('ERR_BAD_REQUEST', cursor.error)
-
-  const outcome = await listPairs(network.network, { limit: limit.limit, cursor: cursor.cursor })
-  if (!outcome.ok) return errorResponse('ERR_BAD_REQUEST', outcome.error)
-  return textResponse({
-    pairs: outcome.pairs,
-    nextCursor: outcome.nextCursor,
-    hasMore: outcome.hasMore,
-  })
-}
-
-async function handleGetPools(args: ToolArguments): Promise<McpToolResponse> {
-  const network = parseNetworkArg(args)
-  if ('error' in network) return errorResponse('ERR_BAD_REQUEST', network.error)
-  const limit = parseLimitArg(args?.limit, POOLS_PAGE_SIZE)
-  if ('error' in limit) return errorResponse('ERR_BAD_REQUEST', limit.error)
-  const cursor = parseCursorArg(args?.cursor)
-  if ('error' in cursor) return errorResponse('ERR_BAD_REQUEST', cursor.error)
-
-  const outcome = await listPools(network.network, { limit: limit.limit, cursor: cursor.cursor })
-  if (!outcome.ok) return errorResponse('ERR_BAD_REQUEST', outcome.error)
-  return textResponse({
-    pools: outcome.pools.map(pool => {
-      const { assetA, assetB } = resolvePoolAssets(pool)
-      return { ...pool, assetA, assetB }
-    }),
-    nextCursor: outcome.nextCursor,
-    hasMore: outcome.hasMore,
-  })
-}
-
-async function handleScreenPairs(args: ToolArguments): Promise<McpToolResponse> {
-  const network = parseNetworkArg(args)
-  if ('error' in network) return errorResponse('ERR_BAD_REQUEST', network.error)
-
-  const outcome = await screenPairs(network.network, stringifyScreenerArgs(args))
-  if (!outcome.ok) return errorResponse('ERR_BAD_REQUEST', outcome.error)
-  return textResponse({
-    data: outcome.data,
-    nextCursor: outcome.nextCursor,
-    hasMore: outcome.hasMore,
-    total: outcome.total,
-  })
-}
-
-/**
- * Dispatches one of the Lens tools (guard with {@link isLensToolName} first).
- * Failures inside the shared implementations are mapped to deterministic MCP
- * error responses; the caller never has to catch.
- */
-export async function callLensTool(name: LensToolName, args: ToolArguments): Promise<McpToolResponse> {
-  try {
-    switch (name) {
-      case 'lens_list_pairs':
-        return await handleListPairs(args)
-      case 'lens_get_pools':
-        return await handleGetPools(args)
-      case 'lens_screen_pairs':
-        return await handleScreenPairs(args)
+  if (!match) {
+    return {
+      assetA: { code: row.asset_a, issuer: null },
+      assetB: { code: row.asset_b, issuer: null },
     }
-  } catch (error) {
-    console.error(`[mcp] ${name} failed:`, error)
-    return errorResponse('ERR_INTERNAL_FAILURE', 'Internal server error')
+  }
+
+  const forward = match.assetA.code === row.asset_a
+  return {
+    assetA: assetRef(forward ? match.assetA : match.assetB),
+    assetB: assetRef(forward ? match.assetB : match.assetA),
+  }
+}
+
+export async function readLensPoolsPage(
+  args: LensGetPoolsArguments,
+  queries: LensDataQueries,
+  paging: LensToolPaging
+): Promise<LensDataToolOutcome> {
+  const network = readNetwork(args.network, queries)
+  if (isFailure(network)) return failure(network.code, network.reason)
+
+  const limit = resolveLimit(args.limit, paging)
+  const outcome = await queries.listPools(network, { limit, cursor: args.cursor })
+  if (!outcome.ok) return failure(MCP_ERROR_CODES.ERR_BAD_REQUEST, outcome.error)
+
+  return {
+    ok: true,
+    result: {
+      network,
+      pools: outcome.pools.map(r => ({
+        pool_id: r.pool_id,
+        asset_a: r.asset_a,
+        asset_b: r.asset_b,
+        ...resolvePoolAssets(r, queries.watchedPairs(network)),
+        // numeric columns arrive as strings to keep them exact; an agent reading
+        // JSON wants the number, and this is where the rounding is decided.
+        reserve_a: r.reserve_a === null ? null : parseFloat(r.reserve_a),
+        reserve_b: r.reserve_b === null ? null : parseFloat(r.reserve_b),
+        spot_price: r.spot_price === null ? null : parseFloat(r.spot_price),
+        fee_bp: r.fee_bp === null || r.fee_bp === undefined ? null : parseInt(String(r.fee_bp), 10),
+        timestamp: new Date(r.timestamp).toISOString(),
+      })),
+      limit,
+      nextCursor: outcome.nextCursor,
+      hasMore: outcome.hasMore,
+    },
+  }
+}
+
+const SCREENER_FILTER_KEYS = [
+  'volume',
+  'change_24h_min',
+  'change_24h_max',
+  'price_min',
+  'price_max',
+  'liquidity',
+] as const
+
+export async function readLensScreenerPage(
+  args: LensScreenPairsArguments,
+  queries: LensDataQueries,
+  paging: LensToolPaging
+): Promise<LensDataToolOutcome> {
+  const network = readNetwork(args.network, queries)
+  if (isFailure(network)) return failure(network.code, network.reason)
+
+  const limit = resolveLimit(args.limit, paging)
+
+  const filters: ScreenerFilters = {}
+  for (const key of SCREENER_FILTER_KEYS) {
+    const value = args[key]
+    if (value !== undefined) filters[key] = value
+  }
+
+  const outcome = await queries.screen({
+    network,
+    filters,
+    sortBy: args.sortBy,
+    order: args.order,
+    cursor: args.cursor,
+    limit,
+    // sortBy is enum-validated by the schema, so a market_cap sort is refused as
+    // an invalid argument; only the filter itself needs the dedicated message.
+    marketCapAsked: args.market_cap !== undefined,
+  })
+  if (!outcome.ok) return failure(MCP_ERROR_CODES.ERR_BAD_REQUEST, outcome.error)
+
+  const { page } = outcome
+  return {
+    ok: true,
+    result: {
+      network,
+      data: page.data.map((row: ScreenerRow & { liquidity_unit: string }) => ({
+        pair_key: row.pair_key,
+        volume: row.volume,
+        price: row.price,
+        change_24h: row.change_24h,
+        liquidity: row.liquidity,
+        liquidity_unit: row.liquidity_unit,
+      })),
+      limit: outcome.limit,
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore,
+      total: page.total,
+    },
+  }
+}
+
+/** Run one of the three Lens data tools. The caller has already matched the name. */
+export async function callLensDataTool(
+  name: LensDataToolName,
+  args: unknown,
+  queries: LensDataQueries,
+  paging: LensToolPaging
+): Promise<LensDataToolOutcome> {
+  const schema =
+    name === LENS_LIST_PAIRS_TOOL_NAME
+      ? LENS_LIST_PAIRS_ARGUMENTS_SCHEMA
+      : name === LENS_GET_POOLS_TOOL_NAME
+        ? LENS_GET_POOLS_ARGUMENTS_SCHEMA
+        : LENS_SCREEN_PAIRS_ARGUMENTS_SCHEMA
+
+  const parsed = schema.safeParse(args ?? {})
+  if (!parsed.success) {
+    // Naming the offending argument is the difference between an agent fixing
+    // its call and an agent retrying the same mistake.
+    return failure(MCP_ERROR_CODES.ERR_BAD_REQUEST, formatZodError(parsed.error))
+  }
+
+  switch (name) {
+    case LENS_LIST_PAIRS_TOOL_NAME:
+      return readLensPairsPage(parsed.data as LensListPairsArguments, queries, paging)
+    case LENS_GET_POOLS_TOOL_NAME:
+      return readLensPoolsPage(parsed.data as LensGetPoolsArguments, queries, paging)
+    case LENS_SCREEN_PAIRS_TOOL_NAME:
+      return readLensScreenerPage(parsed.data as LensScreenPairsArguments, queries, paging)
   }
 }

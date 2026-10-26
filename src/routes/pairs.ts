@@ -2,8 +2,9 @@ import type { FastifyInstance } from 'fastify'
 import { getActivePairs, parseAssetStr, makePairKey, registerPair, persistPair, hasPair } from '../pairsRegistry'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
-import type { AssetId } from '../types'
+import type { AssetId, WatchedPair } from '../types'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { admin_auth_failures_total } from '../metrics'
 
 export interface PairWithLatest {
   pairKey: string
@@ -52,9 +53,19 @@ function decodePairsCursor(cursor: string): number | null {
  * With `page.limit` the listing is bounded and comes with a `nextCursor` for
  * the next page — the MCP tool needs that so an agent is not handed 500 pairs
  * at once; without it (the REST route) every active pair is returned, as before.
+ *
+ * `watched` defaults to the process-wide runtime registry, which is what the REST
+ * route has always listed. A caller naming a network other than this process's
+ * own must pass that network's declared pairs instead, or a mainnet request
+ * would be answered with the pairs this testnet process watches — the same
+ * mistake `lens_get_price` documents in ./priceQueries.ts.
  */
-export async function listPairs(network: NetworkName, page: ListPairsPage = {}): Promise<ListPairsOutcome> {
-  const activePairs = getActivePairs()
+export async function listPairs(
+  network: NetworkName,
+  page: ListPairsPage = {},
+  watched: readonly WatchedPair[] = getActivePairs()
+): Promise<ListPairsOutcome> {
+  const activePairs = watched
 
   let offset = 0
   if (page.cursor !== undefined) {
@@ -107,7 +118,7 @@ export async function listPairs(network: NetworkName, page: ListPairsPage = {}):
 
 export async function registerPairsRoutes(app: FastifyInstance) {
   // GET /pairs — list all active pairs with latest price metadata
-  app.get('/pairs', async (req, reply) => {
+  app.get('/pairs', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const outcome = await listPairs(req.network ?? activeNetwork)
     // Unreachable today: the REST route sends no cursor, so listing cannot fail.
     // Kept so a bad cursor is a 400 here too rather than a silent 500.
@@ -119,11 +130,17 @@ export async function registerPairsRoutes(app: FastifyInstance) {
   app.post<{
     Body: { assetA?: string; assetB?: string }
   }>('/pairs', async (req, reply) => {
+    const log = req.log.child({ component: 'route:pairs' })
     // Auth check — read at request time so env can be set after module load
     const ADMIN_API_KEY = process.env.ADMIN_API_KEY
     const key = req.headers['x-admin-key'] ?? req.headers['authorization']?.replace(/^Bearer /, '')
     if (!ADMIN_API_KEY || key !== ADMIN_API_KEY) {
-      return reply.status(401).send({ error: 'Unauthorized — provide a valid X-Admin-Key header' })
+      admin_auth_failures_total.inc()
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        code: 'admin_unauthorized',
+        message: 'Provide valid admin authentication.',
+      })
     }
 
     const { assetA: assetAStr, assetB: assetBStr } = req.body ?? {}
@@ -156,7 +173,7 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     registerPair(pair)
     await persistPair(pair)
 
-    console.log(`[pairs] Added runtime pair: ${pairKey}`)
+    log.info({ pair: pairKey }, 'added runtime pair')
     return reply.status(201).send({ pairKey, assetA, assetB })
   })
 }
