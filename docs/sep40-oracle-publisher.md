@@ -358,7 +358,7 @@ did not land is exactly what an operator needs at 3 a.m. A feed Lens cannot
 backs off (10 s, doubling, capped at 60 s), because "we could not check what is
 already on chain" means the deviation and monotonicity promises cannot be kept.
 
-`npm run db:push` (or your usual `prisma db push`) creates the table; this repo
+`npm run db:migrate` (`prisma migrate dev`) creates the table; this repo
 has no migrations directory.
 
 ---

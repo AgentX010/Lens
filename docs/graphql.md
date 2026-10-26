@@ -13,6 +13,8 @@ Lens exposes a high-performance GraphQL API alongside its REST interface, powere
    - [`etBestRoute`](#2-getbestroute)
    - [`getPriceHistory`](#3-getpricehistory)
    - [`listPairs`](#4-listpairs)
+   - [`screener`](#5-screener)
+   - [`volumes` and `spreads`](#6-volumes-and-spreads)
 4. [Live Price Subscriptions (`graphql-transport-ws`)](#live-price-subscriptions-graphql-transport-ws)
    - [Protocol Handshake Walkthrough](#protocol-handshake-walkthrough)
    - [Network Filtering Semantics](#network-filtering-semantics)
@@ -69,6 +71,9 @@ type Query {
   getBestRoute(assetA: String!, assetB: String!, amount: Float!): RouteInfo
   getPriceHistory(assetA: String!, assetB: String!, window: String!, from: String, to: String, limit: Int): [PriceBucket]
   listPairs: [String]!
+  screener(filters: ScreenerFilters, sortBy: String = "volume", order: ScreenerSortOrder = DESC, cursor: String, limit: Int = 20): ScreenerPage!
+  volumes(asset: String!, window: String, network: String): VolumeReport!
+  spreads(asset: String!, window: String, network: String): SpreadReport!
 }
 
 type Subscription {
@@ -360,6 +365,151 @@ curl -s -X POST http://localhost:3002/graphql \
     ]
   }
 }
+```
+
+---
+
+### 5. `screener`
+
+Screens tracked pairs by volume, 24-hour change, price and AMM liquidity,
+with cursor pagination. It shares its implementation with the REST
+`GET /screener` route: same filters, same sort fields, same cursor semantics
+and the same `[1, 100]` limit clamp (never rejected).
+
+#### Arguments
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `filters` | `ScreenerFilters` | none | Numeric filters (`volume`, `change24hMin`, `change24hMax`, `priceMin`, `priceMax`, `liquidity`); omitted fields do not filter. Each numeric filter is a lower/upper bound as its name says. |
+| `sortBy` | `String` | `"volume"` | One of `volume`, `change_24h`, `price`, `liquidity`. |
+| `order` | `ScreenerSortOrder` | `DESC` | `ASC` or `DESC`. |
+| `cursor` | `String` | none | Opaque `nextCursor` from the previous page. |
+| `limit` | `Int` | `20` | Page size, clamped to `[1, 100]`. |
+
+> [!IMPORTANT]
+> **`market_cap` is rejected, not ignored.** Lens has no circulating supply
+data to compute a market cap from. Both the `marketCap` filter and
+> `sortBy: "market_cap"` fail the query with an `UNSUPPORTED_PARAMETER` /
+> `INVALID_INPUT` error carrying the same explanation REST gives — never a
+> silent null. Use `liquidity` instead.
+
+#### Query Definition
+```graphql
+query ScreenPairs($filters: ScreenerFilters, $sortBy: String, $limit: Int) {
+  screener(filters: $filters, sortBy: $sortBy, limit: $limit) {
+    network
+    hasMore
+    nextCursor
+    rows {
+      pairKey
+      volume
+      price
+      change24h
+      liquidity
+      liquidityUnit
+    }
+  }
+}
+```
+
+#### Runnable `curl` Command
+[```bash
+curl -s -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query ScreenPairs($filters: ScreenerFilters, $sortBy: String, $limit: Int) { screener(filters: $filters, sortBy: $sortBy, limit: $limit) { network hasMore nextCursor rows { pairKey volume price change24h liquidity liquidityUnit } } }",
+    "variables": {
+      "filters": { "volume": 1000, "change24hMin": -10 },
+      "sortBy": "liquidity",
+      "limit": 5
+    }
+  }'
+```]
+
+#### Example Response
+```json
+{
+  "data": {
+    "screener": {
+      "network": "testnet",
+      "hasMore": true,
+      "nextCursor": "eyJib2x1bWUiOjUwMDAwfQ==",
+      "rows": [
+        {
+          "pairKey": "XLM/USDC",
+          "volume": 1425000.5,
+          "price": 0.1245,
+          "change24h": 1.25,
+          "liquidity": 83000.4,
+          "liquidityUnit": "USDC"
+        }
+      ]
+    }
+  }
+}
+```
+
+To fetch the next page, pass the previous response's `nextCursor` back as the
+`cursor` argument. `nextCursor` is `null` on the last page; `hasMore` reports
+whether another page exists.
+
+---
+
+### 6. `volumes` and `spreads`
+
+GraphQL counterparts of REST `GET /volumes/:asset` and `GET /spreads/:asset`.
+Each resolver calls the REST route's own implementation (`computeVolumes` in
+`src/routes/volumes.ts`, `computeSpreads` in `src/routes/spreads.ts`), so the
+figures cannot drift between the two surfaces.
+
+| Argument | `volumes` | `spreads` |
+|---|---|---|
+| `asset` | required, e.g. `XLM` | required, e.g. `XLM` |
+| `window` | `24h` (default), `7d`, `30d` | `5m` (default), `15m`, `1h`, `24h` |
+| `network` | `testnet` / `mainnet`, defaults to the active network | `testnet` / `mainnet`, defaults to the active network |
+
+An unrecognised `window` or `network` fails with `INVALID_INPUT` and the same
+message REST returns with its 400. The network answered for is echoed in
+`network`; the two chains are never pooled.
+
+Per-venue results are a typed list of `VenueQuote`, so a client can select
+just the fields it wants per venue:
+
+- `volumes.venues`: `venue`, `volume` (in the asset's own units, summed across
+  pairs) and `aggregator`. This is REST's `byVenue` map as a list, in REST's
+  `venues` order. Every other REST field (`totals`, `netVolume`,
+  `grossVolume`, `totalVolume`, trade counts, trade-size statistics, `status`,
+  `provenance`) is returned under the same name.
+- `spreads.venues`: one entry per (venue, pair), tightest first, with `pairKey`,
+  `bid`, `ask`, `mid`, `spreadBps`, `spreadPct`, `observations` and `lastSeen`.
+  `tightest` is the first of them, or `null` when no venue quoted the asset.
+
+Fields that belong to the other query are `null` on a `VenueQuote`.
+
+#### Query Definition
+```graphql
+query VenueViews($asset: String!, $network: String) {
+  volumes(asset: $asset, window: "24h", network: $network) {
+    network
+    totals { net gross }
+    venues { venue volume aggregator }
+  }
+  spreads(asset: $asset, window: "5m", network: $network) {
+    network
+    tightest { venue pairKey spreadBps }
+    venues { venue pairKey bid ask spreadBps }
+  }
+}
+```
+
+#### Runnable `curl` Command
+```bash
+curl -s -X POST http://localhost:3002/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query VenueViews($asset: String!, $network: String) { volumes(asset: $asset, network: $network) { network totals { net gross } venues { venue volume aggregator } } spreads(asset: $asset, network: $network) { network tightest { venue pairKey spreadBps } } }",
+    "variables": { "asset": "XLM", "network": "testnet" }
+  }'
 ```
 
 ---
