@@ -9,6 +9,7 @@ import {
   slicePage,
 } from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
+import { findOverlappingGaps } from '../backfill/gaps'
 import { formatPrice, formatVolume } from '../pricing/precision'
 
 /** Supported aggregation intervals → bucket width in seconds. */
@@ -224,6 +225,15 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
     const last = hasMore && data.length > 0 ? data[data.length - 1] : null
     const nextCursor = last ? encodeCursor(last.ts, pair) : null
 
+    const overlappingGaps = await findOverlappingGaps({
+      network,
+      pair,
+      start: from,
+      end: to,
+    })
+
+    const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
+
     if (format === 'csv') {
       // Deliberately no response schema here: Fastify's JSON serializer must
       // not touch this body. charset=utf8 keeps the bytes the golden test pins.
@@ -244,6 +254,7 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
       points: data,
       nextCursor,
       hasMore,
+      ...gapDeclaration,
     }
   })
 }

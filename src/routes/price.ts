@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
+import { findOverlappingGaps } from '../backfill/gaps'
 import { resolveDecimalFormat } from '../utils/decimals'
 
 export const TWAP_WINDOW_MIN_MINUTES = 1
@@ -84,6 +85,15 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           staleThresholdSeconds: staleThreshold,
         })
 
+        const overlappingGaps = await findOverlappingGaps({
+          network,
+          pair: pairKey,
+          start: result.startTime,
+          end: result.endTime,
+        })
+
+        const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
+
         return {
           assetA,
           assetB,
@@ -101,6 +111,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           inputCount: result.inputCount,
           stalenessThresholdSeconds: result.stalenessThresholdSeconds,
           stale: result.stale,
+          ...gapDeclaration,
         }
       } catch (err) {
         // A driver error message can carry the connection string, and so the
@@ -151,6 +162,16 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           staleThresholdSeconds: staleThreshold,
         })
 
+        const overlappingGaps = await findOverlappingGaps({
+          network,
+          pair: pairKey,
+          start: result.startTime,
+          end: result.endTime,
+          source,
+        })
+
+        const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
+
         return {
           assetA,
           assetB,
@@ -169,6 +190,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           inputCount: result.inputCount,
           stalenessThresholdSeconds: result.stalenessThresholdSeconds,
           stale: result.stale,
+          ...gapDeclaration,
         }
       } catch (err) {
         // Same as TWAP above: the driver message can contain credentials.

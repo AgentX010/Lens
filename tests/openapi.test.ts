@@ -22,6 +22,8 @@ const jsonPath = fileURLToPath(new URL('../openapi.json', import.meta.url))
 interface RegisteredRoute {
   method: string
   path: string
+  /** The route's Fastify `config`, which is where access control is declared. */
+  config: Record<string, unknown>
 }
 
 interface Spec {
@@ -55,7 +57,11 @@ beforeAll(async () => {
         // under POST /graphql — the method is a different transport for the
         // same thing, not a different endpoint.
         if (method === 'HEAD' || method === 'OPTIONS' || method === 'QUERY') continue
-        registered.push({ method, path: toOpenApiPath(route.url) })
+        registered.push({
+          method,
+          path: toOpenApiPath(route.url),
+          config: (route.config ?? {}) as Record<string, unknown>,
+        })
       }
     },
   })
@@ -113,6 +119,50 @@ describe('OpenAPI route coverage', () => {
       }
     }
     expect(phantom, `Documented but unregistered: ${JSON.stringify(phantom)}`).toEqual([])
+  })
+
+  it('declares access control on every non-internal route', () => {
+    // Access control lives in a route's options object, which is the easiest
+    // thing to leave out when a handler is written straight after the path
+    // string — and nothing fails when it is. Five routes lost their scope this
+    // week in PRs about unrelated things, and /premium shipped without one.
+    //
+    // Every public route must say what it is: an API-key scope, an explicit
+    // `public: true`, or the admin pair. Silence is not a policy.
+    // Routes that predate this check. Adding a scope to a live route refuses
+    // every existing key that lacks it, so these are frozen rather than fixed
+    // here — see the issue linked below. The list may shrink; it must not grow.
+    const UNDECLARED_LEGACY = new Set([
+      'GET /usage',
+      'GET /usage/me',
+      'GET /impact/{assetA}/{assetB}',
+      'POST /pairs',
+      'GET /movers',
+      'GET /rates',
+      'GET /rates/{asset}',
+      'GET /correlation',
+      'GET /dispersion',
+      'GET /dispersion/{assetA}/{assetB}',
+      // /graphql is deliberate: #623 enforces scope per field against
+      // FIELD_SCOPES, because one route-level scope cannot express a document
+      // that selects fields with different requirements.
+      'GET /graphql',
+      'POST /graphql',
+    ])
+
+    const undeclared = registered.filter(r => {
+      if (isInternalRoute(r.path)) return false
+      if (UNDECLARED_LEGACY.has(`${r.method} ${r.path}`)) return false
+      const c = r.config
+      return !('scope' in c) && c.public !== true && c.admin !== true && !('auth' in c)
+    })
+
+    expect(
+      undeclared,
+      `Routes with no scope, no public flag and no admin config: ${JSON.stringify(
+        undeclared.map(r => `${r.method} ${r.path}`),
+      )}`,
+    ).toEqual([])
   })
 
   it('allow-lists only routes that are actually registered', () => {
