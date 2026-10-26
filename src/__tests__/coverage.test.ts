@@ -1,5 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Fastify from 'fastify'
+
+// The fixtures below use absolute timestamps, and coverage derives `hasGap`
+// from how old the newest indexed trade is (> 6h). Without a frozen clock this
+// suite passes on the day it is written and fails every day after, which is
+// what happened here. Pin "now" just after the fixture timestamps.
+const FROZEN_NOW = new Date('2026-10-19T11:00:00.000Z')
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(FROZEN_NOW)
+})
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const { mockQuery, mockHorizonCall } = vi.hoisted(() => ({
   mockQuery: vi.fn(),

@@ -143,6 +143,7 @@ export function cachePolicyFor(
     case '/price/:assetA/:assetB':
     case '/price/:assetA/:assetB/route':
     case '/price/:assetA/:assetB/depth':
+    case '/premium/:assetA/:assetB':
       policy = 'public, max-age=30'
       break
 
@@ -162,6 +163,7 @@ export function cachePolicyFor(
     case '/coverage/:asset':
     case '/screener':
     case '/basket':
+    case '/tvl':
       policy = 'public, max-age=120'
       break
 
