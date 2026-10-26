@@ -211,7 +211,12 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // GET /price/:assetA/:assetB
   app.get<{
     Params: { assetA: string; assetB: string }
-    Querystring: { decimals?: string; decimalFormat?: string }
+    Querystring: {
+      decimals?: string
+      decimalFormat?: string
+      staleThreshold?: string
+      staleThresholdSeconds?: string
+    }
   }>(
     '/price/:assetA/:assetB',
     { config: { scope: 'read:prices' }, schema: { response: { 200: priceResponseSchema } } },
@@ -222,15 +227,27 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
 
+      const rawThreshold = req.query?.staleThreshold ?? req.query?.staleThresholdSeconds
+      let staleThreshold: number | undefined
+      if (rawThreshold !== undefined) {
+        staleThreshold = parseInt(rawThreshold, 10)
+        if (isNaN(staleThreshold) || staleThreshold <= 0) {
+          return reply.status(400).send({ error: 'staleThreshold must be a positive integer' })
+        }
+      }
+
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
       }
 
-      // Cache key is network-scoped and format-isolated so number and string payloads never collide.
-      const cacheKey = decimalFormat === 'string'
-        ? `${network}:${pair.pairKey}:decimals_string`
-        : `${network}:${pair.pairKey}`
+      // Cache key is network-scoped and format-isolated so number and string payloads never collide,
+      // and scoped to staleThreshold if customized.
+      const cacheParts = [network, pair.pairKey]
+      if (decimalFormat === 'string') cacheParts.push('decimals_string')
+      if (staleThreshold !== undefined) cacheParts.push(`stale_${staleThreshold}`)
+      const cacheKey = cacheParts.join(':')
+
       const cached = await getCachedPrice(cacheKey)
       if (cached) {
         try {
@@ -239,7 +256,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         } catch { /* fall through */ }
       }
 
-      const agg = await getAggregatedPrice(pair.pairKey, network, { decimalFormat })
+      const agg = await getAggregatedPrice(pair.pairKey, network, { decimalFormat, staleThresholdSeconds: staleThreshold })
       const route = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, 1000, network)
       const result = {
         assetA: pair.assetA.code,

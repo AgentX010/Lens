@@ -3389,7 +3389,7 @@ components:
 
     VwapResponse:
       type: object
-      required: [assetA, assetB, pairKey, network, vwap, windowMinutes, source, startTime, endTime, sampleCount, volumeTotal, outlierRejected, filterMethod]
+      required: [assetA, assetB, pairKey, network, vwap, windowMinutes, source, startTime, endTime, sampleCount, volumeTotal, outlierRejected, filterMethod, newestInputObservedAt, inputCount, stalenessThresholdSeconds, stale]
       additionalProperties: false
       properties:
         assetA:

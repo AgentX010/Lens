@@ -24,6 +24,7 @@ const TwapQuerySchema = z.object({
   network: z.enum(['testnet', 'mainnet']).optional(),
   decimals: z.string().optional(),
   decimalFormat: z.string().optional(),
+  staleThreshold: z.coerce.number().int().positive().optional(),
 })
 
 const VwapQuerySchema = z.object({
@@ -33,6 +34,7 @@ const VwapQuerySchema = z.object({
   decimals: z.string().optional(),
   decimalFormat: z.string().optional(),
   network: z.enum(['testnet', 'mainnet']).optional(),
+  staleThreshold: z.coerce.number().int().positive().optional(),
 })
 
 /**
@@ -52,6 +54,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       network?: string
       decimals?: string
       decimalFormat?: string
+      staleThreshold?: string
     }
   }>(
     '/price/twap/:assetA/:assetB',
@@ -78,6 +81,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           outlierMethod: method,
           network,
           decimalFormat,
+          staleThresholdSeconds: staleThreshold,
         })
 
         return {
@@ -117,6 +121,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       decimals?: string
       decimalFormat?: string
       network?: string
+      staleThreshold?: string
     }
   }>(
     '/price/vwap/:assetA/:assetB',
@@ -128,7 +133,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send(formatValidationError(parsed.error))
       }
-      const { window: windowMinutes, source, method } = parsed.data
+      const { window: windowMinutes, source, method, staleThreshold } = parsed.data
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
@@ -143,6 +148,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           outlierMethod: method,
           decimalFormat,
           network,
+          staleThresholdSeconds: staleThreshold,
         })
 
         return {

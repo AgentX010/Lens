@@ -219,11 +219,11 @@ describe('stale price flag and freshness metadata', () => {
       const t2 = new Date(fixedNow.getTime() - 200_000).toISOString()
 
       mockQuery.mockImplementation(async (sql: string) => {
-        if (sql.includes('FROM price_points') && sql.includes('ORDER BY timestamp ASC')) {
+        if (sql.includes('FROM price_points') && (sql.includes('ORDER BY timestamp ASC') || sql.includes('ORDER BY COALESCE(observed_at, timestamp) ASC'))) {
           return {
             rows: [
-              { price: '0.10', timestamp: t1 },
-              { price: '0.11', timestamp: t2 },
+              { price: '0.10', timestamp: t1, observed_at: t1 },
+              { price: '0.11', timestamp: t2, observed_at: t2 },
             ],
           }
         }
@@ -273,11 +273,11 @@ describe('stale price flag and freshness metadata', () => {
       const t2 = new Date(fixedNow.getTime() - 200_000).toISOString()
 
       mockQuery.mockImplementation(async (sql: string) => {
-        if (sql.includes('FROM price_points') && sql.includes('ORDER BY timestamp ASC')) {
+        if (sql.includes('FROM price_points') && (sql.includes('ORDER BY timestamp ASC') || sql.includes('ORDER BY COALESCE(observed_at, timestamp) ASC'))) {
           return {
             rows: [
-              { price: '0.10', volume: '1000', timestamp: t1 },
-              { price: '0.11', volume: '2000', timestamp: t2 },
+              { price: '0.10', volume: '1000', timestamp: t1, observed_at: t1 },
+              { price: '0.11', volume: '2000', timestamp: t2, observed_at: t2 },
             ],
           }
         }

@@ -1,5 +1,5 @@
 import { pgPool } from '../db'
-import { activeNetwork, type NetworkName } from '../config'
+import { activeNetwork, config, type NetworkName } from '../config'
 import type { DecimalFormat } from '../utils/decimals'
 
 // ─── TWAP — Time-Weighted Average Price ───────────────────────────────────────
@@ -62,12 +62,16 @@ export async function computeTWAP(
     outlierMethod?: 'iqr' | 'modified_zscore'
     network?: NetworkName
     decimalFormat?: DecimalFormat
+    staleThresholdSeconds?: number
   }
 ): Promise<TWAPResult> {
   const sampleIntervalSeconds = options?.sampleIntervalSeconds ?? 60
   const outlierMethod = options?.outlierMethod ?? 'iqr'
   const network = options?.network ?? activeNetwork
   const isString = options?.decimalFormat === 'string'
+  const staleThreshold = options?.staleThresholdSeconds
+    ?? (config as any).pricing?.staleThresholdSeconds
+    ?? parseInt(process.env.PRICE_STALE_THRESHOLD_SECONDS ?? process.env.STALENESS_BOUND_SECONDS ?? '300', 10)
 
   // Fetch price points within the window for the specific network, ordered by observed_at
   const result = await pgPool.query(
@@ -98,7 +102,7 @@ export async function computeTWAP(
   }
 
   const newestRow = rows[rows.length - 1]
-  const newestTimestamp = new Date(newestRow.timestamp)
+  const newestTimestamp = new Date(newestRow.observed_at ?? newestRow.timestamp)
   const newestInputObservedAt = newestTimestamp.toISOString()
   const inputCount = rows.length
   const lastTradeAgeSeconds = Math.floor((Date.now() - newestTimestamp.getTime()) / 1000)
@@ -229,11 +233,15 @@ export async function computeVWAP(
     outlierMethod?: 'iqr' | 'modified_zscore'
     network?: NetworkName
     decimalFormat?: DecimalFormat
+    staleThresholdSeconds?: number
   }
 ): Promise<VWAPResult> {
   const outlierMethod = options?.outlierMethod ?? 'iqr'
   const network = options?.network ?? activeNetwork
   const isString = options?.decimalFormat === 'string'
+  const staleThreshold = options?.staleThresholdSeconds
+    ?? (config as any).pricing?.staleThresholdSeconds
+    ?? parseInt(process.env.PRICE_STALE_THRESHOLD_SECONDS ?? process.env.STALENESS_BOUND_SECONDS ?? '300', 10)
 
   let query: string
   let params: any[]
@@ -278,7 +286,7 @@ export async function computeVWAP(
   }
 
   const newestRow = rows[rows.length - 1]
-  const newestTimestamp = new Date(newestRow.timestamp)
+  const newestTimestamp = new Date(newestRow.observed_at ?? newestRow.timestamp)
   const newestInputObservedAt = newestTimestamp.toISOString()
   const inputCount = rows.length
   const lastTradeAgeSeconds = Math.floor((Date.now() - newestTimestamp.getTime()) / 1000)
@@ -309,6 +317,10 @@ export async function computeVWAP(
       outlierRejected: rejectedIndices.size,
       filterMethod: outlierMethod,
       network,
+      newestInputObservedAt,
+      inputCount,
+      stalenessThresholdSeconds: staleThreshold,
+      stale,
     }
   }
 

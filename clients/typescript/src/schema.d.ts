@@ -1064,6 +1064,17 @@ export interface components {
             /** @enum {string} */
             confidence?: "high" | "medium" | "low" | "unknown";
             lastTradeAgeSeconds?: number | null;
+            /**
+             * Format: date-time
+             * @description Observation timestamp of the newest input data point used.
+             */
+            newestInputObservedAt?: string | null;
+            /** @description Count of input data points used in the calculation. */
+            inputCount?: number;
+            /** @description Configured staleness threshold in seconds for this response. */
+            stalenessThresholdSeconds?: number;
+            /** @description True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds. */
+            stale?: boolean;
         };
         RouteHop: {
             assetIn: components["schemas"]["Asset"];
@@ -1235,6 +1246,17 @@ export interface components {
             outlierRejected: number;
             /** @enum {string} */
             filterMethod: "iqr" | "modified_zscore";
+            /**
+             * Format: date-time
+             * @description Observation timestamp of the newest input data point used.
+             */
+            newestInputObservedAt: string | null;
+            /** @description Count of input data points used in the calculation. */
+            inputCount: number;
+            /** @description Configured staleness threshold in seconds for this response. */
+            stalenessThresholdSeconds: number;
+            /** @description True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds. */
+            stale: boolean;
         };
         VwapResponse: {
             assetA: string;
@@ -1254,6 +1276,17 @@ export interface components {
             outlierRejected: number;
             /** @enum {string} */
             filterMethod: "iqr" | "modified_zscore";
+            /**
+             * Format: date-time
+             * @description Observation timestamp of the newest input data point used.
+             */
+            newestInputObservedAt: string | null;
+            /** @description Count of input data points used in the calculation. */
+            inputCount: number;
+            /** @description Configured staleness threshold in seconds for this response. */
+            stalenessThresholdSeconds: number;
+            /** @description True if the time elapsed since newestInputObservedAt exceeds stalenessThresholdSeconds. */
+            stale: boolean;
         };
         VolumeTotals: {
             /** @description Volume summed across primary markets only (excluding aggregator double-counts) */
@@ -1961,6 +1994,8 @@ export interface operations {
     getPrice: {
         parameters: {
             query?: {
+                /** @description Max age in seconds before the price is marked stale (overrides default staleness bound). */
+                staleThreshold?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
             };
@@ -2558,6 +2593,8 @@ export interface operations {
                 /** @description Sampling grid width in seconds. */
                 sampleInterval?: number;
                 method?: "iqr" | "modified_zscore";
+                /** @description Max age in seconds before the price is marked stale (overrides default staleness bound). */
+                staleThreshold?: number;
                 /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
                 network?: components["parameters"]["NetworkQuery"];
             };
