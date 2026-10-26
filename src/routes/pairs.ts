@@ -3,6 +3,14 @@ import { getActivePairs, parseAssetStr, makePairKey, registerPair, persistPair, 
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import type { AssetId, WatchedPair } from '../types'
+import {
+  PAIRS_DEFAULT_LIMIT,
+  PAIRS_MAX_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  parseLimit,
+  slicePage,
+} from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { admin_auth_failures_total } from '../metrics'
 
@@ -12,30 +20,19 @@ export interface PairWithLatest {
   assetB: AssetId
   latestPrice: number | null
   lastUpdated: Date | null
+  sourceTime: Date | null
 }
 
 export interface ListPairsPage {
-  /** Max pairs to return. Omit (REST /pairs) to return every active pair. */
+  /** Requested page size, clamped into [1, PAIRS_MAX_LIMIT] the way the route does. */
   limit?: number
   /** Opaque cursor from a previous `nextCursor`. */
   cursor?: string
 }
 
 export type ListPairsOutcome =
-  | { ok: true; pairs: PairWithLatest[]; nextCursor: string | null; hasMore: boolean }
+  | { ok: true; pairs: PairWithLatest[]; limit: number; nextCursor: string | null; hasMore: boolean }
   | { ok: false; error: string }
-
-// The registry array is the page order, so the cursor is just the index of the
-// next pair, base64-encoded to keep it opaque like the screener's cursor.
-function decodePairsCursor(cursor: string): number | null {
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'))
-    if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0) return parsed
-    return null
-  } catch {
-    return null
-  }
-}
 
 /**
  * The pairs listing behind GET /pairs and the `lens_list_pairs` MCP tool.
@@ -50,9 +47,13 @@ function decodePairsCursor(cursor: string): number | null {
  * real `lastUpdated`, so a caller can see it is old. A pair with no rows on
  * this network at all comes back with null price and timestamp.
  *
- * With `page.limit` the listing is bounded and comes with a `nextCursor` for
- * the next page — the MCP tool needs that so an agent is not handed 500 pairs
- * at once; without it (the REST route) every active pair is returned, as before.
+ * Paginated keyset-style on pairKey ASC (default limit 50, max 200). The rows
+ * are assembled in memory from the registry, so the keyset filter and the
+ * limit+1 probe are applied to the merged list; the cursor carries the last
+ * page's pairKey, so a pair registered mid-paging cannot shift a page boundary
+ * the way an offset would. `limit` in the outcome is the page size actually
+ * honoured, which is what lets the MCP tool tell an agent it asked for 500 and
+ * got 200 rather than silently answering less.
  *
  * `watched` defaults to the process-wide runtime registry, which is what the REST
  * route has always listed. A caller naming a network other than this process's
@@ -66,65 +67,86 @@ export async function listPairs(
   watched: readonly WatchedPair[] = getActivePairs()
 ): Promise<ListPairsOutcome> {
   const activePairs = watched
+  const limit = Math.min(Math.max(page.limit ?? PAIRS_DEFAULT_LIMIT, 1), PAIRS_MAX_LIMIT)
 
-  let offset = 0
+  let afterKey: string | null = null
   if (page.cursor !== undefined) {
-    const decoded = decodePairsCursor(page.cursor)
+    const decoded = decodeCursor(page.cursor)
+    // 'skip' is a well-formed but degenerate cursor: serve the first page rather
+    // than punish a caller who cannot know they produced one.
     if (decoded === null) return { ok: false, error: 'Invalid cursor format' }
-    offset = decoded
+    if (decoded !== 'skip') afterKey = String(decoded.value)
   }
 
-  const start = Math.min(offset, activePairs.length)
-  const end = page.limit !== undefined ? Math.min(start + page.limit, activePairs.length) : activePairs.length
-  const pagePairs = activePairs.slice(start, end)
-
   const result = await pgPool.query(
-    `SELECT p.pair_key, l.price, l.timestamp
+    `SELECT p.pair_key, l.price, l.observed_at, l.source_time, l.timestamp
        FROM unnest($2::text[]) AS p(pair_key)
       CROSS JOIN LATERAL (
-            SELECT price, timestamp
+            SELECT price, COALESCE(observed_at, timestamp) AS observed_at, source_time, timestamp
               FROM price_points
              WHERE network = $1
                AND pair_key = p.pair_key
-             ORDER BY timestamp DESC
+             ORDER BY COALESCE(observed_at, timestamp) DESC
              LIMIT 1
            ) l`,
-    [network, pagePairs.map(p => p.pairKey)]
+    [network, activePairs.map(p => p.pairKey)]
   )
 
-  const latestPrices = new Map<string, { price: number; timestamp: Date }>()
+  const latestPrices = new Map<string, { price: number; observedAt: Date; sourceTime: Date | null }>()
   result.rows.forEach(row => {
     latestPrices.set(row.pair_key, {
       price: parseFloat(row.price),
-      timestamp: row.timestamp,
+      observedAt: row.observed_at ?? row.timestamp,
+      sourceTime: row.source_time ? new Date(row.source_time) : null,
     })
   })
 
-  const pairs = pagePairs.map(p => {
-    const latest = latestPrices.get(p.pairKey)
-    return {
-      pairKey: p.pairKey,
-      assetA: p.assetA,
-      assetB: p.assetB,
-      latestPrice: latest?.price ?? null,
-      lastUpdated: latest?.timestamp ?? null,
-    }
-  })
+  const rows = activePairs
+    .map(p => {
+      const latest = latestPrices.get(p.pairKey)
+      return {
+        pairKey: p.pairKey,
+        assetA: p.assetA,
+        assetB: p.assetB,
+        latestPrice: latest?.price ?? null,
+        lastUpdated: latest?.observedAt ?? null,
+        sourceTime: latest?.sourceTime ?? null,
+      }
+    })
+    .sort((a, b) => (a.pairKey < b.pairKey ? -1 : a.pairKey > b.pairKey ? 1 : 0))
 
-  const hasMore = end < activePairs.length
-  const nextCursor = hasMore ? Buffer.from(JSON.stringify(end)).toString('base64') : null
-  return { ok: true, pairs, nextCursor, hasMore }
+  const pageSource = afterKey ? rows.filter(r => r.pairKey > afterKey) : rows
+  const { data, hasMore } = slicePage(pageSource, limit)
+  const last = data[data.length - 1]
+  const nextCursor = hasMore && last ? encodeCursor(last.pairKey, last.pairKey) : null
+  return { ok: true, pairs: data, limit, nextCursor, hasMore }
 }
 
 export async function registerPairsRoutes(app: FastifyInstance) {
-  // GET /pairs — list all active pairs with latest price metadata
-  app.get('/pairs', { config: { scope: 'read:prices' } }, async (req, reply) => {
-    const outcome = await listPairs(req.network ?? activeNetwork)
-    // Unreachable today: the REST route sends no cursor, so listing cannot fail.
-    // Kept so a bad cursor is a 400 here too rather than a silent 500.
-    if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
-    return { pairs: outcome.pairs }
-  })
+  // GET /pairs?cursor=&limit= — list active pairs with their latest price.
+  //
+  // The listing itself is listPairs(), which the `lens_list_pairs` MCP tool also
+  // runs, so a page over MCP is the same rows and the same cursor as a page over
+  // HTTP. This handler only turns a query string into a page request and the
+  // page back into a reply: a non-numeric limit is the route's own 400, exactly
+  // as /screener answers one.
+  app.get<{ Querystring: { cursor?: string; limit?: string } }>(
+    '/pairs',
+    { config: { scope: 'read:prices' } },
+    async (req, reply) => {
+      const parsedLimit = parseLimit(req.query.limit, PAIRS_DEFAULT_LIMIT, PAIRS_MAX_LIMIT)
+      if ('error' in parsedLimit) {
+        return reply.status(400).send({ error: parsedLimit.error })
+      }
+
+      const outcome = await listPairs(req.network ?? activeNetwork, {
+        limit: parsedLimit.limit,
+        cursor: req.query.cursor,
+      })
+      if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
+      return { pairs: outcome.pairs, nextCursor: outcome.nextCursor, hasMore: outcome.hasMore }
+    }
+  )
 
   // POST /pairs — add a new trading pair at runtime
   app.post<{

@@ -95,7 +95,9 @@ async function buildRestApp() {
 function mockLatestPrices() {
   mockQuery.mockImplementation(async (_sql: string, params: unknown[]) => {
     const keys = (params as string[][])?.[1] ?? []
-    return { rows: keys.map(pair_key => ({ pair_key, price: '0.42', timestamp: OLD })) }
+    return {
+      rows: keys.map(pair_key => ({ pair_key, price: '0.42', timestamp: OLD, source_time: OLD })),
+    }
   })
 }
 
@@ -170,26 +172,33 @@ describe('lens_list_pairs vs GET /pairs', () => {
     const server = buildServer()
     const app = await buildRestApp()
 
-    const rest = (await app.inject({ method: 'GET', url: '/pairs' })).json()
-    expect(rest.pairs).toHaveLength(3)
-
-    // Same implementation: the tool's probe is the route's probe.
-    const restSql = mockQuery.mock.calls[0][0]
-
+    // The route's page and the tool's page for the same arguments: same rows, the
+    // same keyset cursor, the same verdict on whether another page exists. The
+    // tool adds only the page size it honoured and the network it read.
+    const rest1 = (await app.inject({ method: 'GET', url: '/pairs?limit=2' })).json()
     const page1 = await callToolJson(server, 'lens_list_pairs', { limit: 2 })
-    expect(page1.pairs).toEqual(rest.pairs.slice(0, 2))
-    expect(page1.hasMore).toBe(true)
-    expect(typeof page1.nextCursor).toBe('string')
+    expect(page1).toEqual({ network: activeNetwork, limit: 2, ...rest1 })
+
+    // Not just equal output: the identical SQL, because the tool runs the
+    // route's own listing.
+    const restSql = mockQuery.mock.calls[0][0]
     expect(mockQuery.mock.calls.at(-1)![0]).toBe(restSql)
 
+    const rest2 = (
+      await app.inject({ method: 'GET', url: `/pairs?limit=2&cursor=${encodeURIComponent(rest1.nextCursor)}` })
+    ).json()
     const page2 = await callToolJson(server, 'lens_list_pairs', { limit: 2, cursor: page1.nextCursor })
-    expect(page2.pairs).toEqual(rest.pairs.slice(2))
+    expect(page2).toEqual({ network: activeNetwork, limit: 2, ...rest2 })
     expect(page2.hasMore).toBe(false)
     expect(page2.nextCursor).toBe(null)
 
     // Issuers are complete strkeys, never shortened.
     expect(page1.pairs[0].assetB.issuer).toMatch(/^G[A-Z2-7]{55}$/)
     expect(page1.pairs[0].assetB.issuer).toHaveLength(56)
+    // And the freshness metadata REST carries travels too: an agent deciding
+    // whether a price is worth acting on needs the age, not just the number.
+    expect(page1.pairs[0].lastUpdated).toBe(OLD.toISOString())
+    expect(page1.pairs[0].sourceTime).toBe(OLD.toISOString())
     await app.close()
   })
 

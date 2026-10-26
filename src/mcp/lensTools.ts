@@ -107,6 +107,8 @@ export type LensPairEntry = {
   assetB: AssetRef
   latestPrice: number | null
   lastUpdated: string | null
+  /** The venue's own observation time, when the source carries one (#243). */
+  sourceTime: string | null
 }
 
 export type LensPairsPage = {
@@ -181,6 +183,7 @@ function pairEntry(p: PairWithLatest): LensPairEntry {
     latestPrice: p.latestPrice,
     // Dates do not survive JSON; an agent needs to read the age, not infer it.
     lastUpdated: p.lastUpdated ? new Date(p.lastUpdated).toISOString() : null,
+    sourceTime: p.sourceTime ? new Date(p.sourceTime).toISOString() : null,
   }
 }
 
@@ -257,8 +260,9 @@ export function lensDataToolDefinitions() {
                 assetB: assetRefSchema(),
                 latestPrice: { type: ['number', 'null'] },
                 lastUpdated: { type: ['string', 'null'] },
+                sourceTime: { type: ['string', 'null'] },
               },
-              required: ['pairKey', 'assetA', 'assetB', 'latestPrice', 'lastUpdated'],
+              required: ['pairKey', 'assetA', 'assetB', 'latestPrice', 'lastUpdated', 'sourceTime'],
               additionalProperties: false,
             },
           },
@@ -408,7 +412,9 @@ export async function readLensPairsPage(
     result: {
       network,
       pairs: outcome.pairs.map(pairEntry),
-      limit,
+      // The page size the listing actually honoured, which is the clamped one
+      // when the ask was over the ceiling.
+      limit: outcome.limit,
       nextCursor: outcome.nextCursor,
       hasMore: outcome.hasMore,
     },
@@ -474,7 +480,7 @@ export async function readLensPoolsPage(
         fee_bp: r.fee_bp === null || r.fee_bp === undefined ? null : parseInt(String(r.fee_bp), 10),
         timestamp: new Date(r.timestamp).toISOString(),
       })),
-      limit,
+      limit: outcome.limit,
       nextCursor: outcome.nextCursor,
       hasMore: outcome.hasMore,
     },

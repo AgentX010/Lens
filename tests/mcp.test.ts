@@ -292,6 +292,152 @@ describe('BazaarMcpServer bazaar_search SSRF guard (#407)', () => {
   });
 });
 
+describe('BazaarMcpServer network & payment key configuration (#412)', () => {
+  function captureHandler(server: any) {
+    let handler: any = null;
+    server.server.setRequestHandler = (schema: any, fn: any) => {
+      if (schema === CallToolRequestSchema) handler = fn;
+    };
+    server.setupHandlers();
+    return handler;
+  }
+
+  it('starts successfully with only a testnet key configured', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const testnetSecret = Keypair.random().secret();
+
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+    const payment = setupMcpPayment({
+      testnetKey: testnetSecret,
+    });
+
+    expect(payment.activeNetworks).toEqual(['stellar:testnet']);
+    expect(payment.mainnetEnabled).toBe(false);
+    expect(payment.warnings).toHaveLength(0);
+
+    const server = new BazaarMcpServer({
+      fetchWithPayment: payment.fetchWithPayment,
+      paidCallAllowlist: ['example.com'],
+    });
+
+    expect(server).toBeDefined();
+  });
+
+  it('requires explicit opt-in for mainnet even when mainnet key is present', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk');
+    const testnetSecret = Keypair.random().secret();
+    const mainnetSecret = Keypair.random().secret();
+
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+
+    // Without enableMainnet
+    const withoutOptIn = setupMcpPayment({
+      testnetKey: testnetSecret,
+      mainnetKey: mainnetSecret,
+      enableMainnet: false,
+    });
+
+    expect(withoutOptIn.activeNetworks).toEqual(['stellar:testnet']);
+    expect(withoutOptIn.mainnetEnabled).toBe(false);
+    expect(withoutOptIn.info.some(msg => msg.includes('MCP_ENABLE_MAINNET=true'))).toBe(true);
+    expect(withoutOptIn.warnings.some(msg => msg.includes('WARNING'))).toBe(false);
+
+    // With explicit enableMainnet
+    const withOptIn = setupMcpPayment({
+      testnetKey: testnetSecret,
+      mainnetKey: mainnetSecret,
+      enableMainnet: true,
+    });
+
+    expect(withOptIn.activeNetworks).toEqual(['stellar:testnet', 'stellar:pubnet']);
+    expect(withOptIn.mainnetEnabled).toBe(true);
+    expect(withOptIn.warnings.some(msg => msg.includes('WARNING: Mainnet (stellar:pubnet) is enabled!'))).toBe(true);
+  });
+
+  it('starts cleanly with no keys at all and refuses paid_call', async () => {
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+    const payment = setupMcpPayment({});
+
+    expect(payment.activeNetworks).toHaveLength(0);
+    expect(payment.mainnetEnabled).toBe(false);
+    expect(payment.info.some(msg => msg.includes('read-only mode'))).toBe(true);
+
+    // 1. Test when server is constructed with setupMcpPayment's fetchWithPayment (schemes: [])
+    const serverWithEmptySchemes = new BazaarMcpServer({
+      fetchWithPayment: payment.fetchWithPayment,
+      paidCallAllowlist: ['example.com'],
+    });
+    const handler1 = captureHandler(serverWithEmptySchemes);
+
+    // Mock response simulating a 402 challenge demanding testnet
+    const mock402Response = new Response(
+      JSON.stringify({ error: 'Payment required' }),
+      {
+        status: 402,
+        headers: {
+          'Content-Type': 'application/json',
+          'WWW-Authenticate': 'L402 network="stellar:testnet"',
+        },
+      }
+    );
+    const mockFetch402 = vi.fn().mockResolvedValue(mock402Response);
+    (serverWithEmptySchemes as any).fetchWithPayment = mockFetch402;
+
+    // 2. Test when server is constructed without fetchWithPayment
+    const readOnlyServer = new BazaarMcpServer({
+      paidCallAllowlist: ['example.com'],
+    });
+    const handler2 = captureHandler(readOnlyServer);
+
+    const response = await handler2({
+      params: {
+        name: 'paid_call',
+        arguments: { url: 'http://example.com/paid' },
+      },
+    });
+
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_PAYMENT_REJECTED');
+    expect(body.reason).toMatch(/no payment keys configured/i);
+  });
+
+  it('names the missing network in the error response when a payment requires an unconfigured network', async () => {
+    const server = new BazaarMcpServer({
+      fetchWithPayment: vi.fn().mockRejectedValue(
+        new Error('No network/scheme registered for stellar:pubnet')
+      ),
+      paidCallAllowlist: ['example.com'],
+    });
+
+    const handler = captureHandler(server);
+    const response = await handler({
+      params: {
+        name: 'paid_call',
+        arguments: { url: 'http://example.com/paid' },
+      },
+    });
+
+    expect(response.isError).toBe(true);
+    const body = JSON.parse(response.content[0].text);
+    expect(body.code).toBe('ERR_PAYMENT_REJECTED');
+    expect(body.reason).toContain('stellar:pubnet');
+  });
+
+  it('never logs or leaks secret key values on invalid key errors', async () => {
+    const fakeKey = 'SINVALIDSECRETKEYTHATMUSTNEVERAPPEARINTHELOGSOROUTPUT12345';
+    const { setupMcpPayment } = await import('../src/mcp/paymentConfig.js');
+
+    try {
+      setupMcpPayment({ testnetKey: fakeKey });
+      expect.unreachable('Should have thrown on invalid secret key');
+    } catch (err: any) {
+      expect(err.message).not.toContain(fakeKey);
+      expect(err.message).toContain('stellar:testnet');
+    }
+  });
+});
+
 describe('BazaarMcpServer argument validation (#411)', () => {
   function captureHandlers(server: any) {
     let callHandler: any = null;
@@ -1080,20 +1226,25 @@ describe('bazaar_search discovery routing', () => {
     expect(JSON.parse(response.content[0].text)).toEqual(body);
   });
 
-  it('maps an empty resources array to ERR_NO_RESULTS', async () => {
+  it('returns an empty resources array as a success, not an error (#414)', async () => {
+    // "I searched and there were none" is a successful search. Handed an error,
+    // an agent retries, rephrases, or reports a failure to the user — none of
+    // which is the right response to an empty set, and all of which cost a paid
+    // call. The empty collection is the answer.
     const { callTool } = searchHarness(() => jsonResponse({ resources: [] }));
 
     const response = await callTool('bazaar_search', { url: 'https://bazaar.example' });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(body.resources).toEqual([]);
+    // Explicit, not merely absent: the agent can tell "none matched" from a
+    // response whose shape it did not understand.
+    expect(body.isError).toBeUndefined();
+    expect(body.code).toBeUndefined();
   });
 
-  it('maps an empty top-level array to ERR_NO_RESULTS', async () => {
+  it('returns an empty top-level array as a success, not an error (#414)', async () => {
     const { callTool } = searchHarness(() => jsonResponse([]));
 
     const response = await callTool('bazaar_search', {
@@ -1101,12 +1252,9 @@ describe('bazaar_search discovery routing', () => {
       query: 'nothing indexed yet',
     });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.parse(response.content[0].text)).toEqual({
-      isError: true,
-      code: MCP_ERROR_CODES.ERR_NO_RESULTS,
-      reason: 'No resources found',
-    });
+    expect(response.isError).toBeFalsy();
+    const body = JSON.parse(response.content[0].text);
+    expect(Array.isArray(body) ? body : body.items ?? body.resources).toEqual([]);
   });
 
   it('maps a non-2xx response to ERR_SERVICE_UNREACHABLE with the status in the reason', async () => {

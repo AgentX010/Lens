@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { poolsResponseSchema } from '../api/schemas'
+import { POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT, decodeCursor, encodeCursor, parseLimit, slicePage } from '../pagination'
 import { formatDecimal, resolveDecimalFormat } from '../utils/decimals'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
@@ -23,27 +24,15 @@ export interface PoolSnapshotRow {
 }
 
 export interface ListPoolsPage {
-  /** Max pools to return. Omit (REST /pools) to return every pool. */
+  /** Requested page size, clamped into [1, POOLS_MAX_LIMIT] the way the route does. */
   limit?: number
   /** Opaque cursor from a previous `nextCursor`. */
   cursor?: string
 }
 
 export type ListPoolsOutcome =
-  | { ok: true; pools: PoolSnapshotRow[]; nextCursor: string | null; hasMore: boolean }
+  | { ok: true; pools: PoolSnapshotRow[]; limit: number; nextCursor: string | null; hasMore: boolean }
   | { ok: false; error: string }
-
-// The listing is ordered by pool_id, so the cursor is the last pool_id of the
-// previous page, base64-encoded to keep it opaque like the screener's cursor.
-function decodePoolsCursor(cursor: string): string | null {
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'))
-    if (typeof parsed === 'string' && parsed.length > 0) return parsed
-    return null
-  } catch {
-    return null
-  }
-}
 
 /**
  * The pools listing behind GET /pools and the `lens_get_pools` MCP tool.
@@ -55,78 +44,70 @@ function decodePoolsCursor(cursor: string): string | null {
  * Cost is O(pools x log n); the old DISTINCT ON sorted every row of every
  * network. A quiet pool is kept with its real `timestamp`, never dropped.
  *
- * With `page.cursor` the skip scan is seeded past that pool_id (a keyset page,
- * still no history scan), and with `page.limit` the page is bounded — the MCP
- * tool needs that so an agent is not handed every pool at once. Without either
- * (the REST route) every pool on the network is returned, as before.
+ * Paginated keyset-style on pool_id ASC (default limit 50, max 200): the cursor
+ * carries the last page's pool_id and the skip scan's seed resumes strictly
+ * after it, so a pool inserted mid-paging cannot shift a page boundary the way
+ * an offset would. `limit` in the outcome is the page size actually honoured —
+ * the MCP tool echoes it so an agent that asked for 500 knows it got 200.
  */
 export async function listPools(network: NetworkName, page: ListPoolsPage = {}): Promise<ListPoolsOutcome> {
-  let after: string | null = null
-  if (page.cursor !== undefined) {
-    const decoded = decodePoolsCursor(page.cursor)
-    if (decoded === null) return { ok: false, error: 'Invalid cursor format' }
-    after = decoded
-  }
+  const limit = Math.min(Math.max(page.limit ?? POOLS_DEFAULT_LIMIT, 1), POOLS_MAX_LIMIT)
 
   const params: unknown[] = [network]
-  let seed = '(SELECT pool_id FROM pool_snapshots WHERE network = $1'
-  if (after !== null) {
-    params.push(after)
-    seed += ` AND pool_id > $${params.length}`
+  let seedFilter = ''
+  if (page.cursor !== undefined) {
+    const decoded = decodeCursor(page.cursor)
+    // 'skip' is a well-formed but degenerate cursor: serve the first page rather
+    // than punish a caller who cannot know they produced one.
+    if (decoded === null) return { ok: false, error: 'Invalid cursor format' }
+    if (decoded !== 'skip') {
+      params.push(decoded.value)
+      seedFilter = ` AND pool_id > $${params.length}`
+    }
   }
-  seed += ' ORDER BY pool_id LIMIT 1)'
+  params.push(limit + 1) // Fetch one extra to determine hasMore
 
-  let sql = `WITH RECURSIVE ids AS (
-         ${seed}
-         UNION ALL
-         SELECT (SELECT s.pool_id FROM pool_snapshots s
-                  WHERE s.network = $1 AND s.pool_id > ids.pool_id
-                  ORDER BY s.pool_id LIMIT 1)
-           FROM ids
-          WHERE ids.pool_id IS NOT NULL
-       )
-       SELECT l.pool_id, l.asset_a, l.asset_b,
-              l.reserve_a::numeric, l.reserve_b::numeric, l.spot_price::numeric, l.fee_bp, l.timestamp
+  const result = await pgPool.query(
+    `WITH RECURSIVE ids AS (
+       (SELECT pool_id FROM pool_snapshots WHERE network = $1${seedFilter} ORDER BY pool_id LIMIT 1)
+       UNION ALL
+       SELECT (SELECT s.pool_id FROM pool_snapshots s
+                WHERE s.network = $1 AND s.pool_id > ids.pool_id
+                ORDER BY s.pool_id LIMIT 1)
          FROM ids
-        CROSS JOIN LATERAL (
-              SELECT * FROM pool_snapshots s
-               WHERE s.network = $1 AND s.pool_id = ids.pool_id
-               ORDER BY s.timestamp DESC
-               LIMIT 1
-             ) l
-        WHERE ids.pool_id IS NOT NULL`
+        WHERE ids.pool_id IS NOT NULL
+     )
+     SELECT l.pool_id, l.asset_a, l.asset_b,
+            l.reserve_a::numeric, l.reserve_b::numeric, l.spot_price::numeric, l.fee_bp, l.timestamp
+       FROM ids
+      CROSS JOIN LATERAL (
+            SELECT * FROM pool_snapshots s
+             WHERE s.network = $1 AND s.pool_id = ids.pool_id
+             ORDER BY s.timestamp DESC
+             LIMIT 1
+           ) l
+      WHERE ids.pool_id IS NOT NULL
+      ORDER BY l.pool_id ASC
+      LIMIT $${params.length}`,
+    params
+  )
 
-  if (page.limit !== undefined) {
-    // Fetch one extra to determine hasMore
-    params.push(page.limit + 1)
-    sql += `
-       LIMIT $${params.length}`
-
-    const result = await pgPool.query(sql, params)
-    const rows = result.rows as PoolSnapshotRow[]
-    const hasMore = rows.length > page.limit
-    const pools = hasMore ? rows.slice(0, page.limit) : rows
-    const nextCursor =
-      hasMore && pools.length > 0
-        ? Buffer.from(JSON.stringify(pools[pools.length - 1].pool_id)).toString('base64')
-        : null
-    return { ok: true, pools, nextCursor, hasMore }
-  }
-
-  const result = await pgPool.query(sql, params)
-  return { ok: true, pools: result.rows as PoolSnapshotRow[], nextCursor: null, hasMore: false }
+  const { data, hasMore } = slicePage(result.rows as PoolSnapshotRow[], limit)
+  const last = data[data.length - 1]
+  const nextCursor = hasMore && last ? encodeCursor(last.pool_id, last.pool_id) : null
+  return { ok: true, pools: data, limit, nextCursor, hasMore }
 }
 
 export async function registerPoolsRoutes(app: FastifyInstance) {
-  app.get(
+  // GET /pools?cursor=&limit= — the listing above, rendered with the caller's
+  // chosen decimal format.
+  app.get<{ Querystring: { cursor?: string; limit?: string } }>(
     '/pools',
     {
       config: { scope: 'read:prices' },
       schema: {
         response: {
           200: poolsResponseSchema,
-          // Unreachable today (the REST route sends no cursor); declared so the
-          // bad-cursor branch stays a typed 400 rather than a silent 500.
           400: { type: 'object', required: ['error'], properties: { error: { type: 'string' } } },
         },
       },
@@ -138,7 +119,12 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
         reply.header('x-decimal-format', 'string')
       }
 
-      const outcome = await listPools(network)
+      const parsedLimit = parseLimit(req.query.limit, POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT)
+      if ('error' in parsedLimit) {
+        return reply.status(400).send({ error: parsedLimit.error })
+      }
+
+      const outcome = await listPools(network, { limit: parsedLimit.limit, cursor: req.query.cursor })
       if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
 
       return {
@@ -152,6 +138,8 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
           fee_bp: r.fee_bp !== null && r.fee_bp !== undefined ? parseInt(String(r.fee_bp), 10) : null,
           timestamp: r.timestamp,
         })),
+        nextCursor: outcome.nextCursor,
+        hasMore: outcome.hasMore,
       }
     }
   )

@@ -69,6 +69,7 @@ export const prisma = globalForPrisma.prisma ?? new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
 })
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+;(globalThis as any).__lens_prisma = prisma
 
 // Raw pg pool for time-series queries (VWAP, aggregates)
 // ssl: true with rejectUnauthorized: false is required for Supabase pgbouncer
@@ -79,6 +80,7 @@ export const pgPool = new Pool({
   connectionTimeoutMillis: config.db.poolTimeoutMs,
   ssl: config.db.url.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
 })
+;(globalThis as any).__lens_pgPool = pgPool
 
 // Instrument raw pg queries
 const originalQuery = pgPool.query.bind(pgPool)
@@ -200,26 +202,35 @@ export function recordPoolExhaustion(err: unknown, source: string = 'database'):
  * venues/soroswap.ts).
  */
 export async function upsertPricePoints(points: {
+  id?: string
   assetA: string; assetB: string; pairKey: string; source: string
   poolId?: string; price: number; baseVolume: number; counterVolume: number
-  ledger: number; timestamp: Date; eventId?: string
+  ledger: number; observedAt?: Date; sourceTime?: Date | null; timestamp?: Date; eventId?: string
 }[], network: NetworkName): Promise<number> {
   if (points.length === 0) return 0
   const result = await prisma.pricePoint.createMany({
-    data: points.map(p => ({
-      network,
-      assetA: p.assetA,
-      assetB: p.assetB,
-      pairKey: p.pairKey,
-      source: p.source,
-      poolId: p.poolId ?? null,
-      price: p.price,
-      baseVolume: p.baseVolume,
-      counterVolume: p.counterVolume,
-      ledger: p.ledger,
-      timestamp: p.timestamp,
-      eventId: p.eventId || synthesizeEventId(network, p),
-    })),
+    data: points.map(p => {
+      const observedAt = p.observedAt ?? p.timestamp ?? new Date()
+      const sourceTime = p.sourceTime !== undefined ? p.sourceTime : null
+      const timestamp = p.timestamp ?? observedAt
+      return {
+        id: p.id ?? (p.eventId ? `${network}:${p.source}:${p.eventId}` : undefined),
+        network,
+        assetA: p.assetA,
+        assetB: p.assetB,
+        pairKey: p.pairKey,
+        source: p.source,
+        poolId: p.poolId ?? null,
+        price: p.price,
+        baseVolume: p.baseVolume,
+        counterVolume: p.counterVolume,
+        ledger: p.ledger,
+        timestamp,
+        observedAt,
+        sourceTime,
+        eventId: p.eventId || synthesizeEventId(network, { ...p, timestamp: p.timestamp }),
+      }
+    }),
     skipDuplicates: true,
   })
   return result.count
@@ -231,6 +242,12 @@ export async function upsertPricePoints(points: {
  * pool, ledger, observation timestamp and amounts — never a clock read or a
  * random value. Re-submitting the same batch re-derives the same key, so the
  * unique index absorbs it.
+ *
+ * If a row carries no natural eventId and no timestamp (#620), the key is
+ * synthesized strictly from the remaining content fields (network, source,
+ * pairKey, poolId, ledger, price, baseVolume, counterVolume) with an empty
+ * timestamp slot, NEVER from a wall-clock fallback. This ensures replays of
+ * rows without temporal anchors remain deterministic and deduplicate correctly.
  *
  * The timestamp used is the one the venue attached to the observation (a
  * trade's ledger close time, a snapshot's poll time), which is part of the
@@ -248,7 +265,7 @@ export function synthesizeEventId(
   p: {
     source: string; pairKey: string; poolId?: string
     price: number; baseVolume: number; counterVolume: number
-    ledger: number; timestamp: Date
+    ledger: number; timestamp?: Date
   },
 ): string {
   const content = [
@@ -257,7 +274,7 @@ export function synthesizeEventId(
     p.pairKey,
     p.poolId ?? '',
     String(p.ledger),
-    p.timestamp.toISOString(),
+    p.timestamp ? p.timestamp.toISOString() : '',
     String(p.price),
     String(p.baseVolume),
     String(p.counterVolume),
@@ -268,7 +285,7 @@ export function synthesizeEventId(
 /**
  * The cursor and the ledger it reached, read in one round trip. Ingesters need
  * both: the cursor resumes pagination, and the ledger is the fallback when a
- * trade's TOID can't be parsed (see ingesters/toid.ts).
+ * trade's TOID can't be parsed (see ingest/toid.ts).
  */
 export interface IndexerState {
   cursor: string | null
@@ -286,4 +303,81 @@ export async function setIndexerCursor(id: string, cursor: string, network: Netw
     create: { id, network, lastCursor: cursor, lastLedger: ledger, lastProcessedAt: new Date() },
     update: { lastCursor: cursor, lastLedger: ledger, lastProcessedAt: new Date() },
   })
+}
+
+export interface LendingRateInput {
+  poolId: string
+  asset: string
+  assetAddress?: string
+  source?: string
+  supplyApy: number
+  borrowApy: number
+  supplyApr?: number
+  borrowApr?: number
+  utilization: number
+  totalSupply?: number
+  totalBorrowed?: number
+  reserves?: number
+  ledger?: number
+  timestamp?: Date
+}
+
+export async function insertLendingRates(
+  rates: LendingRateInput[],
+  network: NetworkName
+): Promise<number> {
+  if (rates.length === 0) return 0
+  const result = await prisma.lendingRate.createMany({
+    data: rates.map(r => ({
+      network,
+      venue: 'blend',
+      source: r.source ?? 'blend',
+      poolId: r.poolId,
+      asset: r.asset,
+      assetAddress: r.assetAddress ?? null,
+      // supply_rate / borrow_rate are APYs, the figures GET /rates/:asset ranks by.
+      supplyRate: r.supplyApy,
+      borrowRate: r.borrowApy,
+      supplyApr: r.supplyApr ?? null,
+      borrowApr: r.borrowApr ?? null,
+      utilization: r.utilization,
+      totalSupply: r.totalSupply ?? null,
+      totalBorrowed: r.totalBorrowed ?? null,
+      reserves: r.reserves ?? null,
+      ledger: r.ledger ?? 0,
+      timestamp: r.timestamp ?? new Date(),
+    })),
+  })
+  return result.count
+}
+
+export async function getLatestLendingRates(
+  network: NetworkName,
+  options?: { asset?: string; poolId?: string; limit?: number }
+) {
+  const limit = options?.limit ?? 100
+  let query = `
+    SELECT DISTINCT ON (pool_id, asset)
+      id, network, venue, source, pool_id, pool_name, asset, asset_address,
+      supply_rate::float AS supply_apy, borrow_rate::float AS borrow_apy,
+      supply_apr::float, borrow_apr::float,
+      utilization::float, total_supply::float, total_borrowed::float, reserves::float,
+      ledger, timestamp
+    FROM lending_rates
+    WHERE network = $1
+  `
+  const params: any[] = [network]
+  if (options?.asset) {
+    params.push(options.asset.toUpperCase())
+    query += ` AND UPPER(asset) = $${params.length}`
+  }
+  if (options?.poolId) {
+    params.push(options.poolId)
+    query += ` AND pool_id = $${params.length}`
+  }
+  query += ` ORDER BY pool_id, asset, timestamp DESC LIMIT $${params.length + 1}`
+  params.push(limit)
+
+  const result = await pgPool.query(query, params)
+  return result.rows
 }
