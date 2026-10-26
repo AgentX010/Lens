@@ -33,6 +33,7 @@
     "db:migration-cycle": "bash scripts/db-migration-cycle.sh",
     "db:migrate:partitioning": "tsx scripts/migrate-price-points-partitioning.ts",
     "seed": "tsx scripts/seed.ts",
+    "backfill": "tsx scripts/backfill.ts",
     "snippets:gen": "tsx scripts/gen-snippets.ts"
   },
   "dependencies": {

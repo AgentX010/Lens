@@ -1235,6 +1235,8 @@ export interface components {
             outlierRejected: number;
             /** @enum {string} */
             filterMethod: "iqr" | "modified_zscore";
+            incomplete?: boolean;
+            gaps?: components["schemas"]["DataGap"][];
         };
         VwapResponse: {
             assetA: string;
@@ -1254,6 +1256,17 @@ export interface components {
             outlierRejected: number;
             /** @enum {string} */
             filterMethod: "iqr" | "modified_zscore";
+            incomplete?: boolean;
+            gaps?: components["schemas"]["DataGap"][];
+        };
+        DataGap: {
+            source: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            /** @enum {string} */
+            status: "open" | "permanent";
         };
         VolumeTotals: {
             /** @description Volume summed across primary markets only (excluding aggregator double-counts) */
@@ -2102,6 +2115,8 @@ export interface operations {
                         /** @enum {string} */
                         network?: "testnet" | "mainnet";
                         window?: string;
+                        incomplete?: boolean;
+                        gaps?: components["schemas"]["DataGap"][];
                         buckets?: components["schemas"]["PriceBucket"][];
                     };
                 };
@@ -2216,6 +2231,8 @@ export interface operations {
                         }[];
                         nextCursor: string | null;
                         hasMore: boolean;
+                        incomplete?: boolean;
+                        gaps?: components["schemas"]["DataGap"][];
                     };
                 };
             };
@@ -2275,6 +2292,8 @@ export interface operations {
                         from: string;
                         /** Format: date-time */
                         to: string;
+                        incomplete?: boolean;
+                        gaps?: components["schemas"]["DataGap"][];
                         /** @description Number of points in this page (not the total across pages). */
                         count: number;
                         points: {
