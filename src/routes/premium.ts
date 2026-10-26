@@ -73,7 +73,7 @@ export async function registerPremiumRoutes(app: FastifyInstance) {
   app.get<{
     Params: { assetA: string; assetB: string }
     Querystring: { network?: string }
-  }>('/premium/:assetA/:assetB', async (req, reply) => {
+  }>('/premium/:assetA/:assetB', { config: { scope: 'read:prices' } }, async (req, reply) => {
     const log = req.log.child({ component: 'route:premium' })
     const { assetA, assetB } = req.params
 
