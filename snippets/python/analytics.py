@@ -73,6 +73,10 @@ print("getMovers", res.status_code, res.json())
 res = requests.get(BASE_URL + "/v1/benchmark/USDC", params=[], headers={}, timeout=30)
 print("getBenchmark", res.status_code, res.json())
 
+# getPegs: GET /v1/pegs
+res = requests.get(BASE_URL + "/v1/pegs", params=[["network","testnet"]], headers={}, timeout=30)
+print("getPegs", res.status_code, res.json())
+
 # getBasket: GET /v1/basket
 res = requests.get(BASE_URL + "/v1/basket", params=[["asset","XLM"],["asset","USDC"],["weight","0.6"],["weight","0.4"]], headers={}, timeout=30)
 print("getBasket", res.status_code, res.json())

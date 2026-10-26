@@ -126,6 +126,7 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/v1/screener` | Screen pairs by volume, change, liquidity and price |
 | GET | `/v1/movers` | Get biggest gainers, biggest losers, and volume movers |
 | GET | `/v1/benchmark/:asset` | Get peg-deviation statistics for an asset against a target |
+| GET | `/v1/pegs` | Get peg deviation and window statistics for all configured pegged assets |
 | GET | `/v1/basket` | Compute the weighted price of a basket of assets |
 | GET | `/v1/correlation` | Compute price correlation matrix across a basket of assets over a window |
 | GET | `/v1/discovery/resources` | Browse the x402 Bazaar catalog of discoverable resources |

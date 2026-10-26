@@ -659,6 +659,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pegs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get peg deviation and window statistics for all configured pegged assets */
+        get: operations["getPegs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/basket": {
         parameters: {
             query?: never;
@@ -1906,6 +1923,30 @@ export interface components {
             ageSeconds?: number | null;
             onChainAgeSeconds?: number | null;
             cexAgeSeconds?: number | null;
+        };
+        PegReport: {
+            asset: string;
+            code: string;
+            issuer: string | null;
+            target: string;
+            targetPrice: number;
+            pairKey: string | null;
+            currentPrice: number | null;
+            currentDeviationBps: number | null;
+            worstDeviationBps: number | null;
+            window: string;
+            provenance: {
+                venues: string[];
+                sampleCount: number;
+                freshnessSeconds: number | null;
+                /** Format: date-time */
+                lastSampleTimestamp: string | null;
+            };
+        };
+        PegsResponse: {
+            /** @enum {string} */
+            network: "testnet" | "mainnet";
+            pegs: components["schemas"]["PegReport"][];
         };
     };
     responses: {
@@ -3588,6 +3629,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["InternalErrorResponse"];
                 };
+            };
+        };
+    };
+    getPegs: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of configured pegged assets and their peg deviations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PegsResponse"];
+                };
+            };
+            /** @description Invalid network parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

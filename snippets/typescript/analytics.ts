@@ -143,6 +143,15 @@ const BASE_URL = requireEnv('LENS_BASE_URL')
   console.log("getBenchmark", res.status, await res.json())
 }
 
+// getPegs: GET /v1/pegs
+{
+  const url = new URL("/v1/pegs", BASE_URL)
+  url.search = new URLSearchParams([["network","testnet"]]).toString()
+  const headers: Record<string, string> = {}
+  const res = await fetch(url, { headers })
+  console.log("getPegs", res.status, await res.json())
+}
+
 // getBasket: GET /v1/basket
 {
   const url = new URL("/v1/basket", BASE_URL)
