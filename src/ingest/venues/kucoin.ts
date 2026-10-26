@@ -218,6 +218,7 @@ export function deriveKuCoinPricePoints(
 ): VenuePricePoint[] {
   if (ticker.last <= 0) return []
 
+  const now = new Date()
   return [
     {
       network,
@@ -229,6 +230,8 @@ export function deriveKuCoinPricePoints(
       baseVolume: ticker.baseVolume,
       counterVolume: ticker.quoteVolume,
       ledger: 0,
+      observedAt: now,
+      sourceTime: ticker.timestamp,
       timestamp: ticker.timestamp,
     },
   ]
@@ -236,13 +239,16 @@ export function deriveKuCoinPricePoints(
 
 export async function ingestKuCoinPair(
   pair: WatchedPair,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) return
   const creds = getKuCoinCredentials()
   if (!creds) return
 
   const ticker = await fetchKuCoinTicker(pair.assetA.code, pair.assetB.code)
   if (!ticker) return
+  if (signal?.aborted) return
 
   const points = deriveKuCoinPricePoints(ticker, pair, network)
   if (points.length === 0) return
@@ -250,12 +256,18 @@ export async function ingestKuCoinPair(
   await writeVenuePricePoints(KUCOIN_VENUE_NAME, points, pair, network)
 }
 
-export interface KuCoinAdapter extends VenueAdapter<WatchedPair, CexTicker>, CexAdapter {}
+export interface KuCoinAdapter extends VenueAdapter<WatchedPair, CexTicker>, Omit<CexAdapter, 'source'> {
+  readonly source: string
+}
 
 export const kucoinAdapter: KuCoinAdapter = {
   name: KUCOIN_VENUE_NAME,
   kind: 'orderbook',
   source: KUCOIN_SOURCE_NAME,
+  sourceTimeCapability: { status: 'provided', semantic: 'exchange_timestamp' },
+  classification: 'primary',
+  type: 'Order Book',
+  description: 'KuCoin centralized spot exchange',
 
   isEnabled(_network: NetworkName): boolean {
     return hasKuCoinCredentials()
@@ -283,8 +295,8 @@ export const kucoinAdapter: KuCoinAdapter = {
     await writeVenuePricePoints(KUCOIN_VENUE_NAME, points, pair, network)
   },
 
-  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
-    await ingestKuCoinPair(pair, network)
+  async ingestPair(pair: WatchedPair, network: NetworkName, signal?: AbortSignal): Promise<void> {
+    await ingestKuCoinPair(pair, network, signal)
   },
 
   async fetchTicker(base: string, quote: string): Promise<CexTicker | null> {

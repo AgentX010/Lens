@@ -6,6 +6,8 @@ import {
   ammAdapter,
   soroswapAdapter,
   aquariusAdapter,
+  defindexAdapter,
+  phoenixAdapter,
   kucoinAdapter,
   gateioAdapter,
 } from '../ingest/venues'
@@ -32,6 +34,8 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     expect(adapters).toContain(ammAdapter)
     expect(adapters).toContain(soroswapAdapter)
     expect(adapters).toContain(aquariusAdapter)
+    expect(adapters).toContain(defindexAdapter)
+    expect(adapters).toContain(phoenixAdapter)
     expect(adapters).toContain(kucoinAdapter)
     expect(adapters).toContain(gateioAdapter)
   })
@@ -42,9 +46,11 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     expect(enabled).toContain(ammAdapter)
     expect(enabled).toContain(soroswapAdapter)
     expect(enabled).toContain(aquariusAdapter)
+    expect(enabled).toContain(defindexAdapter)
+    expect(enabled).toContain(phoenixAdapter)
     expect(enabled).not.toContain(kucoinAdapter)
     expect(enabled).not.toContain(gateioAdapter)
-    expect(enabled.length).toBe(4)
+    expect(enabled.length).toBe(6)
   })
 
   it('enables KuCoin adapter when KUCOIN_API_KEY is present', () => {
@@ -52,7 +58,7 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     const enabled = getEnabledAdapters()
     expect(enabled).toContain(kucoinAdapter)
     expect(enabled).not.toContain(gateioAdapter)
-    expect(enabled.length).toBe(5)
+    expect(enabled.length).toBe(7)
   })
 
   it('enables Gate.io adapter when GATEIO_API_KEY is present', () => {
@@ -60,7 +66,7 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     const enabled = getEnabledAdapters()
     expect(enabled).toContain(gateioAdapter)
     expect(enabled).not.toContain(kucoinAdapter)
-    expect(enabled.length).toBe(5)
+    expect(enabled.length).toBe(7)
   })
 
   it('fault isolation: missing credentials for KuCoin does not prevent Gate.io from running', () => {
@@ -70,6 +76,7 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     const enabled = getEnabledAdapters()
     expect(enabled).toContain(gateioAdapter)
     expect(enabled).not.toContain(kucoinAdapter)
+    expect(enabled.length).toBe(7)
   })
 
   it('enables all adapters when credentials for all venues are present', () => {
@@ -79,6 +86,6 @@ describe('Venue Adapter Registry (Configuration-driven)', () => {
     const enabled = getEnabledAdapters()
     expect(enabled).toContain(kucoinAdapter)
     expect(enabled).toContain(gateioAdapter)
-    expect(enabled.length).toBe(6)
+    expect(enabled.length).toBe(8)
   })
 })

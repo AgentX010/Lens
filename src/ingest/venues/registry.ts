@@ -13,6 +13,8 @@ import { sdexAdapter } from './sdex'
 import { ammAdapter } from './amm'
 import { soroswapAdapter } from './soroswap'
 import { aquariusAdapter } from './aquarius'
+import { defindexAdapter } from './defindex'
+import { phoenixAdapter } from './phoenix'
 import { kucoinAdapter, hasKuCoinCredentials } from './kucoin'
 import { gateioAdapter, hasGateioCredentials } from './gateio'
 import type { VenueAdapter } from './types'
@@ -44,6 +46,14 @@ export const registeredVenues: VenueRegistration[] = [
   },
   {
     adapter: aquariusAdapter,
+    hasCredentials: () => true,
+  },
+  {
+    adapter: defindexAdapter,
+    hasCredentials: () => true,
+  },
+  {
+    adapter: phoenixAdapter,
     hasCredentials: () => true,
   },
   {

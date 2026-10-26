@@ -216,6 +216,7 @@ export function deriveGateioPricePoints(
 ): VenuePricePoint[] {
   if (ticker.last <= 0) return []
 
+  const now = new Date()
   return [
     {
       network,
@@ -227,6 +228,8 @@ export function deriveGateioPricePoints(
       baseVolume: ticker.baseVolume,
       counterVolume: ticker.quoteVolume,
       ledger: 0,
+      observedAt: now,
+      sourceTime: ticker.timestamp,
       timestamp: ticker.timestamp,
     },
   ]
@@ -234,13 +237,16 @@ export function deriveGateioPricePoints(
 
 export async function ingestGateioPair(
   pair: WatchedPair,
-  network: NetworkName = activeNetwork
+  network: NetworkName = activeNetwork,
+  signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) return
   const creds = getGateioCredentials()
   if (!creds) return
 
   const ticker = await fetchGateioTicker(pair.assetA.code, pair.assetB.code)
   if (!ticker) return
+  if (signal?.aborted) return
 
   const points = deriveGateioPricePoints(ticker, pair, network)
   if (points.length === 0) return
@@ -248,12 +254,18 @@ export async function ingestGateioPair(
   await writeVenuePricePoints(GATEIO_VENUE_NAME, points, pair, network)
 }
 
-export interface GateioAdapter extends VenueAdapter<WatchedPair, CexTicker>, CexAdapter {}
+export interface GateioAdapter extends VenueAdapter<WatchedPair, CexTicker>, Omit<CexAdapter, 'source'> {
+  readonly source: string
+}
 
 export const gateioAdapter: GateioAdapter = {
   name: GATEIO_VENUE_NAME,
   kind: 'orderbook',
   source: GATEIO_SOURCE_NAME,
+  sourceTimeCapability: { status: 'provided', semantic: 'exchange_timestamp' },
+  classification: 'primary',
+  type: 'Order Book',
+  description: 'Gate.io centralized spot exchange',
 
   isEnabled(_network: NetworkName): boolean {
     return hasGateioCredentials()
@@ -281,8 +293,8 @@ export const gateioAdapter: GateioAdapter = {
     await writeVenuePricePoints(GATEIO_VENUE_NAME, points, pair, network)
   },
 
-  async ingestPair(pair: WatchedPair, network: NetworkName): Promise<void> {
-    await ingestGateioPair(pair, network)
+  async ingestPair(pair: WatchedPair, network: NetworkName, signal?: AbortSignal): Promise<void> {
+    await ingestGateioPair(pair, network, signal)
   },
 
   async fetchTicker(base: string, quote: string): Promise<CexTicker | null> {
