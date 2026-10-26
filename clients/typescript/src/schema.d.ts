@@ -224,7 +224,7 @@ export interface paths {
         };
         /**
          * Get price history buckets
-         * @description Returns price aggregate buckets (1m, 5m, 1h, 24h). Prices are serialized up to 18 decimal places and volumes up to 7 decimal places matching Stellar stroop precision.
+         * @description Returns price aggregate buckets (1m, 5m, 1h, 24h). Buckets are aggregated with exact numeric arithmetic in the database, so a sum does not depend on the order rows were summed in; values are narrowed to JSON numbers at the edge.
          */
         get: operations["getPriceHistory"];
         put?: never;
