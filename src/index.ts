@@ -15,7 +15,7 @@ import { applyMigrations } from './db/migrate'
 import { buildApp } from './app'
 import { fanOutManager } from './ws/fanout'
 
-import { venueAdapters, startVenueAdapter, startBlendIngester } from './ingest/venues'
+import { venueAdapters, getEnabledAdapters, startVenueAdapter, startBlendIngester } from './ingest/venues'
 import { startSnapshotIngester } from './ingest/snapshot'
 import { createAggregateQueue, startAggregateWorker, scheduleAggregateRefresh } from './jobs/aggregateRefresh'
 import { createSnapshotRetentionQueue, startSnapshotRetentionWorker, scheduleSnapshotRetention, pruneAllNetworks, SNAPSHOT_RETENTION_DAYS } from './jobs/snapshotRetention'
@@ -311,7 +311,7 @@ async function main() {
   const enabledNetworks = getEnabledNetworks()
   log.info({ networks: enabledNetworks }, 'starting ingesters')
   for (const network of enabledNetworks) {
-    for (const adapter of venueAdapters) {
+    for (const adapter of getEnabledAdapters()) {
       restartIngester(adapter.name, network, () => startVenueAdapter(adapter, network))
     }
     restartIngester('Snapshot', network, () => startSnapshotIngester(network))

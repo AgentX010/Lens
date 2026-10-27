@@ -99,6 +99,7 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/v1/status` | Get API status and indexer state |
 | GET | `/v1/snapshot` | Whole-network snapshot (venues, TVL, 24h volume, top pairs, pegs, freshness) |
 | GET | `/v1/price/:assetA/:assetB` | Get aggregated price for a pair |
+| GET | `/v1/premium/:assetA/:assetB` | Get on-chain vs CEX price premium and spread |
 | GET | `/v1/price/:assetA/:assetB/route` | Get best swap route for a pair and amount |
 | GET | `/v1/price/:asset/fiat` | Convert asset price to fiat currency with NGN support (#290) |
 | GET | `/v1/price/:assetA/:assetB/history` | Get price history buckets |
@@ -113,14 +114,19 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/v1/price/twap/:assetA/:assetB` | Get a manipulation-resistant time-weighted average price |
 | GET | `/v1/price/vwap/:assetA/:assetB` | Get a volume-weighted average price |
 | GET | `/v1/volumes/:asset` | Get cross-venue traded volume for an asset |
+| GET | `/v1/coverage` | Get overall market coverage ratio and cross-venue activity |
+| GET | `/v1/coverage/:asset` | Get market coverage ratio and venue breakdown for a specific asset |
 | GET | `/v1/spreads/:asset` | Get the tightest per-venue bid/ask spread for an asset |
 | GET | `/v1/rates/:asset` | Get supply and borrow rates for an asset across lending venues |
 | GET | `/v1/dispersion/:assetA/:assetB` | Get venue price dispersion and outlier attribution for a pair |
 | GET | `/v1/dispersion` | List cross-venue dispersion across watched pairs |
 | GET | `/v1/compare/:asset` | Compare Lens prices with every configured external oracle |
+| GET | `/v1/compare/:asset/history` | Query historical oracle comparison series and window summary statistics |
+| GET | `/v1/compare/:asset/summary` | Summary statistics per oracle over a window (mean deviation, worst deviation, time outside band) |
 | GET | `/v1/screener` | Screen pairs by volume, change, liquidity and price |
 | GET | `/v1/movers` | Get biggest gainers, biggest losers, and volume movers |
 | GET | `/v1/benchmark/:asset` | Get peg-deviation statistics for an asset against a target |
+| GET | `/v1/pegs` | Get peg deviation and window statistics for all configured pegged assets |
 | GET | `/v1/basket` | Compute the weighted price of a basket of assets |
 | GET | `/v1/correlation` | Compute price correlation matrix across a basket of assets over a window |
 | GET | `/v1/discovery/resources` | Browse the x402 Bazaar catalog of discoverable resources |
@@ -943,6 +949,53 @@ curl -s http://localhost:3002/price/XLM/USDC | jq '{price, ammPrice, lastUpdated
 ```
 
 *(Note: timestamp values above reflect the dynamic hourly anchor at seed execution time and request time).*
+
+## Backfill & Ingestion Gap Detection
+
+Lens provides persistent gap detection and an idempotent historical backfill CLI to recover missing trade history and declare incomplete time windows in API responses.
+
+### 1. Gap Detection & IngestionGap Model
+Gaps are tracked per `(network, source, pair)` in the `IngestionGap` table:
+- `status`: `'open'` (detected hole in history), `'filled'` (successfully backfilled), or `'permanent'` (data cannot be backfilled).
+- Gaps are detected when the elapsed time between consecutive price points exceeds the expected ingestion cadence (default 5 minutes).
+- **Idempotency & Merging:** Re-running gap detection never duplicates records; overlapping or adjacent intervals are merged automatically into single continuous ranges.
+
+### 2. Backfill CLI
+Run the backfill script for historical sources:
+
+```bash
+# Backfill SDEX trades for XLM/USDC
+npm run backfill -- --source SDEX --pair XLM/USDC --start 2026-10-15T00:00:00Z --end 2026-10-15T06:00:00Z --network testnet
+
+# Detect gaps and backfill them automatically
+npm run backfill -- --source SDEX --pair XLM/USDC --start 2026-10-15T00:00:00Z --end 2026-10-15T06:00:00Z --detect
+```
+
+- **History Support:**
+  - `SDEX` and `AMM`: Supported via Horizon historical trade paging. Refetched points are written through the same idempotent `upsertPricePoints` path as live ingestion. Gaps are marked `filled`.
+  - `soroswap_amm` and `aquarius_amm`: State-only venues that do not retain historical trade logs. Attempting to backfill them cleanly marks the gap as `permanent` and exits without error.
+- **Idempotent Re-runs:** Running the same backfill range a second time produces 0 duplicate records and leaves the gap marked `filled`.
+
+### 3. Incomplete Window Declarations in API Responses
+When querying time-window endpoints (such as `/prices/history`, `/candles/:assetA/:assetB`, `/price/:assetA/:assetB/history`, `/price/twap/*`, and `/price/vwap/*`):
+- If the requested window overlaps any `open` or `permanent` gaps for that pair and network, the response includes `incomplete: true` along with the list of overlapping `gaps`:
+  ```json
+  {
+    "pair": "XLM/USDC",
+    "interval": "1m",
+    "incomplete": true,
+    "gaps": [
+      {
+        "source": "SDEX",
+        "start": "2026-10-15T01:00:00.000Z",
+        "end": "2026-10-15T03:00:00.000Z",
+        "status": "open"
+      }
+    ],
+    "points": [...]
+  }
+  ```
+- Windows that are clean or cover only `filled` gaps omit the `incomplete` and `gaps` fields.
 
 ## Numeric Precision & Serialization
 

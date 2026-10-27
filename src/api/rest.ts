@@ -212,7 +212,12 @@ export async function registerRESTRoutes(app: FastifyInstance) {
   // GET /price/:assetA/:assetB
   app.get<{
     Params: { assetA: string; assetB: string }
-    Querystring: { decimals?: string; decimalFormat?: string }
+    Querystring: {
+      decimals?: string
+      decimalFormat?: string
+      staleThreshold?: string
+      staleThresholdSeconds?: string
+    }
   }>(
     '/price/:assetA/:assetB',
     { config: { scope: 'read:prices' }, schema: { response: { 200: priceResponseSchema } } },
@@ -223,15 +228,27 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
 
+      const rawThreshold = req.query?.staleThreshold ?? req.query?.staleThresholdSeconds
+      let staleThreshold: number | undefined
+      if (rawThreshold !== undefined) {
+        staleThreshold = parseInt(rawThreshold, 10)
+        if (isNaN(staleThreshold) || staleThreshold <= 0) {
+          return reply.status(400).send({ error: 'staleThreshold must be a positive integer' })
+        }
+      }
+
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
       }
 
-      // Cache key is network-scoped and format-isolated so number and string payloads never collide.
-      const cacheKey = decimalFormat === 'string'
-        ? `${network}:${pair.pairKey}:decimals_string`
-        : `${network}:${pair.pairKey}`
+      // Cache key is network-scoped and format-isolated so number and string payloads never collide,
+      // and scoped to staleThreshold if customized.
+      const cacheParts = [network, pair.pairKey]
+      if (decimalFormat === 'string') cacheParts.push('decimals_string')
+      if (staleThreshold !== undefined) cacheParts.push(`stale_${staleThreshold}`)
+      const cacheKey = cacheParts.join(':')
+
       const cached = await getCachedPrice(cacheKey)
       if (cached) {
         try {
@@ -240,7 +257,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         } catch { /* fall through */ }
       }
 
-      const agg = await getAggregatedPrice(pair.pairKey, network, { decimalFormat })
+      const agg = await getAggregatedPrice(pair.pairKey, network, { decimalFormat, staleThresholdSeconds: staleThreshold })
       const route = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, 1000, network)
       const result = {
         assetA: pair.assetA.code,
@@ -301,10 +318,10 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     { config: { scope: 'read:history' }, schema: { response: { 200: historyResponseSchema } } },
     async (req, reply) => {
       const { assetA, assetB } = req.params
+      const network = req.network ?? activeNetwork
       const window = req.query.window ?? '1h'
       const limit = Math.min(parseInt(req.query.limit ?? String(HISTORY_DEFAULT_LIMIT), 10), HISTORY_MAX_LIMIT)
       const pairKey = makePairKey(assetA, assetB)
-      const network = req.network ?? activeNetwork
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
@@ -325,6 +342,25 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         [pairKey, window, network, limit]
       )
 
+      const windowMs: Record<string, number> = {
+        '1m': 60_000,
+        '5m': 300_000,
+        '1h': 3600_000,
+        '24h': 86400_000,
+      }
+      const span = (windowMs[window] ?? 3600_000) * limit
+      const now = new Date()
+      const queryStart = new Date(now.getTime() - span)
+
+      const overlappingGaps = await findOverlappingGaps({
+        network,
+        pair: pairKey,
+        start: queryStart,
+        end: now,
+      })
+
+      const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
+
       return {
         pairKey,
         network,
@@ -341,6 +377,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
           high: formatDecimal(r.high_price, decimalFormat),
           low: formatDecimal(r.low_price, decimalFormat),
         })),
+        ...gapDeclaration,
       }
     }
   )

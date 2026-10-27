@@ -126,6 +126,14 @@ export async function registerCandleRoutes(app: FastifyInstance) {
       params
     )
 
+    const overlappingGaps = await findOverlappingGaps({
+      network,
+      pair: pairKey,
+      start: from,
+      end: to,
+    })
+
+    const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
     const { data, hasMore } = slicePage(result.rows, limit)
     const last = hasMore && data.length > 0 ? data[data.length - 1] : null
     const nextCursor = last
@@ -146,6 +154,7 @@ export async function registerCandleRoutes(app: FastifyInstance) {
         close: formatPrice(r.close),
         volume: formatVolume(r.volume),
       })),
+      ...gapDeclaration,
       nextCursor,
       hasMore,
     }

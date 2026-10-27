@@ -24,6 +24,7 @@ const TwapQuerySchema = z.object({
   network: z.enum(['testnet', 'mainnet']).optional(),
   decimals: z.string().optional(),
   decimalFormat: z.string().optional(),
+  staleThreshold: z.coerce.number().int().positive().optional(),
 })
 
 const VwapQuerySchema = z.object({
@@ -33,6 +34,7 @@ const VwapQuerySchema = z.object({
   decimals: z.string().optional(),
   decimalFormat: z.string().optional(),
   network: z.enum(['testnet', 'mainnet']).optional(),
+  staleThreshold: z.coerce.number().int().positive().optional(),
 })
 
 /**
@@ -52,6 +54,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       network?: string
       decimals?: string
       decimalFormat?: string
+      staleThreshold?: string
     }
   }>(
     '/price/twap/:assetA/:assetB',
@@ -63,7 +66,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send(apiError('invalid_parameter', parsed.error.issues[0].message || 'Invalid parameters'))
       }
-      const { window: windowMinutes, sampleInterval, method } = parsed.data
+      const { window: windowMinutes, sampleInterval, method, staleThreshold } = parsed.data
       const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
@@ -78,7 +81,17 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           outlierMethod: method,
           network,
           decimalFormat,
+          staleThresholdSeconds: staleThreshold,
         })
+
+        const overlappingGaps = await findOverlappingGaps({
+          network,
+          pair: pairKey,
+          start: result.startTime,
+          end: result.endTime,
+        })
+
+        const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
 
         return {
           assetA,
@@ -93,6 +106,11 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           sampleCount: result.sampleCount,
           outlierRejected: result.outlierRejected,
           filterMethod: result.filterMethod,
+          newestInputObservedAt: result.newestInputObservedAt,
+          inputCount: result.inputCount,
+          stalenessThresholdSeconds: result.stalenessThresholdSeconds,
+          stale: result.stale,
+          ...gapDeclaration,
         }
       } catch (err) {
         // A driver error message can carry the connection string, and so the
@@ -113,6 +131,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       decimals?: string
       decimalFormat?: string
       network?: string
+      staleThreshold?: string
     }
   }>(
     '/price/vwap/:assetA/:assetB',
@@ -124,7 +143,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       if (!parsed.success) {
         return reply.status(400).send(apiError('invalid_parameter', parsed.error.issues[0].message || 'Invalid parameters'))
       }
-      const { window: windowMinutes, source, method } = parsed.data
+      const { window: windowMinutes, source, method, staleThreshold } = parsed.data
       const decimalFormat = resolveDecimalFormat(req)
       if (decimalFormat === 'string') {
         reply.header('x-decimal-format', 'string')
@@ -139,7 +158,18 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           outlierMethod: method,
           decimalFormat,
           network,
+          staleThresholdSeconds: staleThreshold,
         })
+
+        const overlappingGaps = await findOverlappingGaps({
+          network,
+          pair: pairKey,
+          start: result.startTime,
+          end: result.endTime,
+          source,
+        })
+
+        const gapDeclaration = overlappingGaps.length > 0 ? { incomplete: true, gaps: overlappingGaps } : {}
 
         return {
           assetA,
@@ -155,6 +185,11 @@ export async function registerPriceRoutes(app: FastifyInstance) {
           volumeTotal: result.volumeTotal,
           outlierRejected: result.outlierRejected,
           filterMethod: result.filterMethod,
+          newestInputObservedAt: result.newestInputObservedAt,
+          inputCount: result.inputCount,
+          stalenessThresholdSeconds: result.stalenessThresholdSeconds,
+          stale: result.stale,
+          ...gapDeclaration,
         }
       } catch (err) {
         // Same as TWAP above: the driver message can contain credentials.

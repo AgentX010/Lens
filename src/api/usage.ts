@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import fp from 'fastify-plugin'
 import { getUsageSummary, getAllUsageSummaries } from '../x402/metering'
 import { apiError } from '../errors'
 
