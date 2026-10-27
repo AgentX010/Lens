@@ -680,6 +680,11 @@ const globalConfig = {
     // invalidation is immediate. Expiry is re-checked on every cache hit, so
     // this TTL never extends a key past its own `expiresAt`. Keep it short.
     apiKeyTtl: parseInt(process.env.API_KEY_CACHE_TTL ?? '30', 10),
+    // How long asset metadata and its verification status are cached. Far
+    // longer than the price TTLs above on purpose: an issuer's home domain and
+    // toml do not move minute to minute, and re-fetching them per request would
+    // put a network round trip in front of every asset lookup.
+    assetTtl: parseInt(process.env.ASSET_CACHE_TTL ?? '3600', 10),
   },
   plausibility: {
     minPrice: parseFloat(process.env.PRICE_MIN_PLAUSIBLE ?? '0.0000000001'),

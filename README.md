@@ -141,6 +141,8 @@ npx @modelcontextprotocol/inspector npm run mcp:server
 | GET | `/v1/graphql` | Execute a GraphQL query over HTTP GET |
 | POST | `/v1/graphql` | Execute a GraphQL query, mutation or subscription handshake |
 | GET | `/v1/rates` | Query latest lending and borrow rates across pools |
+| GET | `/v1/assets` | List tracked assets with metadata and verification status |
+| GET | `/v1/assets/:code` | Get metadata and verification status for a specific asset |
 <!-- ENDPOINTS:END -->
 
 The table above is generated from [`openapi.yaml`](openapi.yaml) by `npm run openapi:gen`;
@@ -159,6 +161,8 @@ the committed table differs from a fresh generation.
 | Which trading pairs are currently tracked by Lens on the active network? | `GET /v1/pairs` | `GET /pairs?network=testnet` |
 | How do I configure Lens to track a new trading pair? | `POST /v1/pairs` | `POST /pairs` |
 | Which AMM liquidity pools are being watched, and what are their reserves? | `GET /v1/pools` | `GET /pools?network=testnet` |
+| Which assets does Lens track, and which issuers are verified? | `GET /v1/assets` | `GET /assets?network=testnet` |
+| Who issues this asset, and can I trust that issuer? | `GET /v1/assets/:code` | `GET /assets/USDC?network=testnet` |
 | What is the total cross-venue trading volume for an asset over time? | `GET /v1/volumes/:asset` | `GET /volumes/XLM?window=24h&network=testnet` |
 | How much value is locked across Stellar DeFi, and in which venues? | `GET /v1/tvl` | `GET /tvl?network=testnet` |
 | Which venue is actually carrying the trading volume? | `GET /v1/venues` | `GET /venues?window=24h&network=testnet` |

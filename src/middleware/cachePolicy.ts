@@ -174,8 +174,10 @@ export function cachePolicyFor(
       policy = 'public, max-age=300'
       break
 
-    // Static discovery document.
+    // Static discovery document and asset metadata — change rarely.
     case '/discovery/resources':
+    case '/assets':
+    case '/assets/:code':
       policy = 'public, max-age=3600'
       break
 

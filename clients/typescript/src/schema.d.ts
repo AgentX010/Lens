@@ -910,6 +910,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List tracked assets with metadata and verification status */
+        get: operations["listAssets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/assets/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get metadata and verification status for a specific asset */
+        get: operations["getAsset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1980,6 +2014,92 @@ export interface components {
             /** @enum {string} */
             network: "testnet" | "mainnet";
             pegs: components["schemas"]["PegReport"][];
+        };
+        AssetMetadata: {
+            /** @example USDC */
+            code: string;
+            /** @example GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN */
+            issuer: string | null;
+            /** @example USD Coin */
+            name: string | null;
+            /** @example circle.com */
+            homeDomain: string | null;
+            /** @example circle.com */
+            domain: string | null;
+            /** @example 7 */
+            decimals: number;
+            /** @example 2 */
+            displayDecimals?: number | null;
+            /**
+             * @example verified
+             * @enum {string}
+             */
+            status: "verified" | "unverified";
+            /** @example true */
+            verified: boolean;
+            /** Format: date-time */
+            checkedAt: string;
+            /** Format: date-time */
+            dateChecked: string;
+            /** @example CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75 */
+            contractId?: string | null;
+            /** @example https://circle.com/.well-known/stellar.toml */
+            tomlUrl?: string | null;
+            verification?: {
+                /** @enum {string} */
+                status: "verified" | "unverified";
+                verified: boolean;
+                /** Format: date-time */
+                checkedAt: string;
+                tomlUrl: string | null;
+            };
+            provenance?: {
+                source: string;
+                /** Format: date-time */
+                checkedAt: string;
+                tomlUrl: string | null;
+                verified: boolean;
+            };
+        };
+        AssetsResponse: {
+            /** @enum {string} */
+            network: "testnet" | "mainnet";
+            assets: components["schemas"]["AssetMetadata"][];
+        };
+        AssetDetailResponse: {
+            /** @enum {string} */
+            network: "testnet" | "mainnet";
+            code: string;
+            issuer: string | null;
+            name: string | null;
+            homeDomain: string | null;
+            domain: string | null;
+            decimals: number;
+            displayDecimals?: number | null;
+            /** @enum {string} */
+            status: "verified" | "unverified";
+            verified: boolean;
+            /** Format: date-time */
+            checkedAt: string;
+            /** Format: date-time */
+            dateChecked: string;
+            contractId?: string | null;
+            tomlUrl?: string | null;
+            verification?: {
+                /** @enum {string} */
+                status: "verified" | "unverified";
+                verified: boolean;
+                /** Format: date-time */
+                checkedAt: string;
+                tomlUrl: string | null;
+            };
+            provenance?: {
+                source: string;
+                /** Format: date-time */
+                checkedAt: string;
+                tomlUrl: string | null;
+                verified: boolean;
+            };
         };
     };
     responses: {
@@ -4176,6 +4296,89 @@ export interface operations {
             };
             /** @description Invalid parameters */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listAssets: {
+        parameters: {
+            query?: {
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+                /** @description Filter assets by asset code (case-insensitive). */
+                code?: string;
+                /** @description Filter assets by verification status. */
+                verified?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of tracked assets with metadata and verification status */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetsResponse"];
+                };
+            };
+            /** @description Invalid request parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getAsset: {
+        parameters: {
+            query?: {
+                /** @description Full 56-character Stellar issuer account address (e.g. GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN). */
+                issuer?: string;
+                /** @description Stellar network to answer for — `testnet` or `mainnet`. Defaults to this instance's configured `STELLAR_NETWORK`. An unrecognised value is rejected with 400. DB-backed reads are currently served from whichever network this instance indexes, even when another is requested. */
+                network?: components["parameters"]["NetworkQuery"];
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description Asset code (e.g. XLM, USDC) or canonical identifier (CODE:ISSUER).
+                 * @example USDC
+                 */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Asset metadata with verification status and date checked */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetDetailResponse"];
+                };
+            };
+            /** @description Invalid asset code or parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Asset not found on the specified network */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -37,6 +37,7 @@ import { registerCorrelationRoutes } from './routes/correlation'
 import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
+import { registerAssetRoutes } from './routes/assets'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerApiVersioning, rewriteVersionedApiUrl } from './api/versioning'
 import { registerDispersionRoutes } from './routes/dispersion'
@@ -261,6 +262,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerSnapshotRoutes(app)
   await registerVenueRoutes(app)
   await registerFiatRoutes(app)
+  await registerAssetRoutes(app)
   await registerSettleRoute(app)
   await registerDispersionRoutes(app)
   await registerHealthRoutes(app)
