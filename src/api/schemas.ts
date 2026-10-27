@@ -116,6 +116,10 @@ export const statusResponseSchema = {
     lastIndexedLedger: { type: ['integer', 'null'] },
     lastProcessedAt: {},
     ingestLagSeconds: { type: ['integer', 'null'] },
+    // Which scheduler is actually pruning snapshots (#399). Reported so a
+    // silent fall back to the in-process timer is visible rather than inferred
+    // from the absence of queue activity.
+    retentionPath: { type: 'string', enum: ['starting', 'redis_queue', 'in_process'] },
     adminConfigured: { type: 'boolean' },
     crashes: {
       type: 'array',

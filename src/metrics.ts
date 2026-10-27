@@ -235,6 +235,13 @@ export function markIngestSuccess(venue: string, network: string): void {
   ingest_last_success_timestamp.set({ venue, network }, Math.floor(Date.now() / 1000))
 }
 
+export const snapshot_retention_path = new Gauge({
+  name: 'snapshot_retention_path',
+  help: 'Active snapshot retention scheduler (one-hot path labels)',
+  labelNames: ['path'],
+  registers: [register],
+})
+
 export const http_requests_total = new Counter({
   name: 'http_requests_total',
   help: 'Total number of HTTP requests served, by method, route template and status class',

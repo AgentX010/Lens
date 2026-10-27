@@ -321,6 +321,15 @@ paths:
                   ingestLagSeconds:
                     type: integer
                     nullable: true
+                  retentionPath:
+                    type: string
+                    enum: [starting, redis_queue, in_process]
+                    description: >-
+                      Which scheduler is pruning snapshots. `redis_queue` is the
+                      normal path; `in_process` means Redis was unreachable at
+                      boot and an hourly in-process timer took over, with a
+                      retry still running. Reported so that fallback is visible
+                      rather than inferred from the absence of queue activity.
                   adminConfigured:
                     type: boolean
                     description: >-

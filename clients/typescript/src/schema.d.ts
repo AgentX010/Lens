@@ -2269,6 +2269,11 @@ export interface operations {
                         /** Format: date-time */
                         lastProcessedAt?: string | null;
                         ingestLagSeconds?: number | null;
+                        /**
+                         * @description Which scheduler is pruning snapshots. `redis_queue` is the normal path; `in_process` means Redis was unreachable at boot and an hourly in-process timer took over, with a retry still running. Reported so that fallback is visible rather than inferred from the absence of queue activity.
+                         * @enum {string}
+                         */
+                        retentionPath?: "starting" | "redis_queue" | "in_process";
                         /** @description Whether this deployment has an ADMIN_TOKEN configured, so an operator can tell a rejected token from a disabled admin surface. Reports only that a token is set, never any part of its value. Admin routes answer 503 admin_not_configured when this is false. */
                         adminConfigured?: boolean;
                     };

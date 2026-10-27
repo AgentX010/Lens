@@ -23,6 +23,7 @@ import {
 } from './schemas'
 import { findOverlappingGaps } from '../backfill/gaps'
 import { getDepth, getImpact } from '../pricing/depth'
+import { getRetentionPath } from '../jobs/retentionStatus'
 
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
@@ -174,6 +175,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         lastIndexedLedger,
         lastProcessedAt,
         ingestLagSeconds,
+        retentionPath: getRetentionPath(),
         // #508: whether the admin surface is usable at all, so an operator
         // can tell "I sent the wrong token" from "this deployment has no
         // ADMIN_TOKEN" without guessing from a 401. It reports only that the
