@@ -2585,6 +2585,19 @@ export interface operations {
                             fee_bp?: number;
                             /** Format: date-time */
                             timestamp?: string;
+                            /**
+                             * @description The window every estimate below is measured over.
+                             * @enum {string}
+                             */
+                            window?: "24h";
+                            /** @description 24h fee return annualised by 365. Null when the pool has no value or no AMM volume in the window, which is an unknown return rather than a zero one. */
+                            feeAprPct?: number | null;
+                            /** @description Constant-product divergence loss over the window, already signed: zero when the price has not moved and negative otherwise. Null when the window has no opening price. */
+                            impermanentLossPct?: number | null;
+                            /** @description 24h fee return plus the (negative) divergence loss. Null when either part is unknown. */
+                            netReturn24hPct?: number | null;
+                            /** @description Always true. These are floating-point estimates, not settled values, and are not affected by ?decimalFormat=string. */
+                            estimate?: boolean;
                         }[];
                         nextCursor: string | null;
                         hasMore: boolean;

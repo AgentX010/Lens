@@ -4,6 +4,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { poolsResponseSchema } from '../api/schemas'
 import { POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT, decodeCursor, encodeCursor, parseLimit, slicePage } from '../pagination'
 import { formatDecimal, resolveDecimalFormat } from '../utils/decimals'
+import { estimatedLpReturns } from '../pricing/lpReturns'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
 /**
@@ -21,6 +22,10 @@ export interface PoolSnapshotRow {
   spot_price: string | null
   fee_bp: number | null
   timestamp: Date
+  /** Oldest spot price inside the 24h window, for the divergence estimate. */
+  window_start_price: string | null
+  /** Counter-asset AMM volume over the same window, for the fee estimate. */
+  window_counter_volume: string | null
 }
 
 export interface ListPoolsPage {
@@ -78,7 +83,9 @@ export async function listPools(network: NetworkName, page: ListPoolsPage = {}):
         WHERE ids.pool_id IS NOT NULL
      )
      SELECT l.pool_id, l.asset_a, l.asset_b,
-            l.reserve_a::numeric, l.reserve_b::numeric, l.spot_price::numeric, l.fee_bp, l.timestamp
+            l.reserve_a::numeric, l.reserve_b::numeric, l.spot_price::numeric, l.fee_bp, l.timestamp,
+            opening.spot_price::numeric AS window_start_price,
+            activity.counter_volume::numeric AS window_counter_volume
        FROM ids
       CROSS JOIN LATERAL (
             SELECT * FROM pool_snapshots s
@@ -86,6 +93,20 @@ export async function listPools(network: NetworkName, page: ListPoolsPage = {}):
              ORDER BY s.timestamp DESC
              LIMIT 1
            ) l
+      -- LEFT, not CROSS: a pool with no snapshot and no trade inside the window
+      -- still belongs in the listing, with its estimates reported as null
+      -- rather than the pool disappearing from the page.
+      LEFT JOIN LATERAL (
+            SELECT s.spot_price FROM pool_snapshots s
+             WHERE s.network = $1 AND s.pool_id = ids.pool_id
+               AND s.timestamp >= NOW() - INTERVAL '24 hours'
+             ORDER BY s.timestamp ASC LIMIT 1
+           ) opening ON true
+      LEFT JOIN LATERAL (
+            SELECT SUM(p.counter_volume) AS counter_volume FROM price_points p
+             WHERE p.network = $1 AND p.pool_id = ids.pool_id AND p.source = 'AMM'
+               AND p.timestamp >= NOW() - INTERVAL '24 hours'
+           ) activity ON true
       WHERE ids.pool_id IS NOT NULL
       ORDER BY l.pool_id ASC
       LIMIT $${params.length}`,
@@ -137,6 +158,7 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
           spot_price: formatDecimal(r.spot_price, decimalFormat),
           fee_bp: r.fee_bp !== null && r.fee_bp !== undefined ? parseInt(String(r.fee_bp), 10) : null,
           timestamp: r.timestamp,
+          ...estimatedLpReturns(r),
         })),
         nextCursor: outcome.nextCursor,
         hasMore: outcome.hasMore,
@@ -144,3 +166,4 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
     }
   )
 }
+

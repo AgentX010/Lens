@@ -1,3 +1,4 @@
+import { estimatedLpReturns } from '../pricing/lpReturns'
 import { MCP_ERROR_CODES } from './codes.js'
 import type { McpErrorCode } from './codes.js'
 import {
@@ -133,6 +134,12 @@ export type LensPoolEntry = {
   spot_price: number | null
   fee_bp: number | null
   timestamp: string
+  /** 24h LP return estimates (#400), identical to the ones GET /pools reports. */
+  window: '24h'
+  feeAprPct: number | null
+  impermanentLossPct: number | null
+  netReturn24hPct: number | null
+  estimate: true
 }
 
 export type LensPoolsPage = {
@@ -305,10 +312,16 @@ export function lensDataToolDefinitions() {
                 spot_price: { type: ['number', 'null'] },
                 fee_bp: { type: ['integer', 'null'] },
                 timestamp: { type: 'string' },
+                window: { type: 'string', enum: ['24h'] },
+                feeAprPct: { type: ['number', 'null'] },
+                impermanentLossPct: { type: ['number', 'null'] },
+                netReturn24hPct: { type: ['number', 'null'] },
+                estimate: { type: 'boolean' },
               },
               required: [
                 'pool_id', 'asset_a', 'asset_b', 'assetA', 'assetB',
                 'reserve_a', 'reserve_b', 'spot_price', 'fee_bp', 'timestamp',
+                'window', 'feeAprPct', 'impermanentLossPct', 'netReturn24hPct', 'estimate',
               ],
               additionalProperties: false,
             },
@@ -479,6 +492,7 @@ export async function readLensPoolsPage(
         spot_price: r.spot_price === null ? null : parseFloat(r.spot_price),
         fee_bp: r.fee_bp === null || r.fee_bp === undefined ? null : parseInt(String(r.fee_bp), 10),
         timestamp: new Date(r.timestamp).toISOString(),
+        ...estimatedLpReturns(r),
       })),
       limit: outcome.limit,
       nextCursor: outcome.nextCursor,
