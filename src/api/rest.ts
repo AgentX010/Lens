@@ -25,6 +25,7 @@ import { findOverlappingGaps } from '../backfill/gaps'
 import { getDepth, getImpact } from '../pricing/depth'
 import { getRetentionPath } from '../jobs/retentionStatus'
 
+import { apiError } from '../errors'
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
 }
@@ -219,14 +220,14 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+      if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
 
       const rawThreshold = req.query?.staleThreshold ?? req.query?.staleThresholdSeconds
       let staleThreshold: number | undefined
       if (rawThreshold !== undefined) {
         staleThreshold = parseInt(rawThreshold, 10)
         if (isNaN(staleThreshold) || staleThreshold <= 0) {
-          return reply.status(400).send({ error: 'staleThreshold must be a positive integer' })
+          return reply.status(400).send(apiError('invalid_parameter', 'staleThreshold must be a positive integer'))
         }
       }
 
@@ -280,10 +281,10 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const amount = parseFloat(req.query.amount ?? '1000')
       // Validate amount before the pair check: a malformed request parameter
       // is a 400 regardless of whether the pair is watched.
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+      if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
 
       const decimalFormat = resolveDecimalFormat(req)
       const routeInfo = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount, network)
@@ -320,7 +321,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       }
 
       if (!['1m', '5m', '1h', '24h'].includes(window)) {
-        return reply.status(400).send({ error: 'window must be one of: 1m, 5m, 1h, 24h' })
+        return reply.status(400).send(apiError('bad_window', 'window must be one of: 1m, 5m, 1h, 24h'))
       }
 
       const result = await pgPool.query(
@@ -397,8 +398,8 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
 
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
+      if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
 
       // Depth reads are network-scoped on both legs (pool_snapshots and the
       // price_points subquery that names this pair's pools), so a mainnet pair
@@ -435,7 +436,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+      if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
 
       const thresholds = req.query.thresholds
         ? req.query.thresholds.split(',').map(Number)
@@ -448,11 +449,11 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         thresholds.some(value => !Number.isFinite(value) || value <= 0) ||
         !Number.isFinite(liquidityFraction) || liquidityFraction <= 0 || liquidityFraction > 1
       ) {
-        return reply.status(400).send({ error: 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1' })
+        return reply.status(400).send(apiError('invalid_parameter', 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1'))
       }
 
       const impact = await getImpact(pair.pairKey, { thresholds, liquidityFraction }, network)
-      if (!impact) return reply.status(404).send({ error: `No AMM liquidity available for ${assetA}/${assetB}` })
+      if (!impact) return reply.status(404).send(apiError('unknown_pair', `No AMM liquidity available for ${assetA}/${assetB}`))
       return { assetA: pair.assetA.code, assetB: pair.assetB.code, pairKey: pair.pairKey, ...impact }
     }
   )

@@ -9,6 +9,7 @@ import {
 } from '../services/coverage'
 import '../middleware/network'
 
+import { apiError } from '../errors'
 /**
  * Register the market coverage reporting routes.
  *
@@ -36,12 +37,12 @@ export async function registerCoverageRoutes(app: FastifyInstance) {
     if (!(window in WINDOW_HOURS)) {
       return reply
         .status(400)
-        .send({ error: `window must be one of: ${COVERAGE_WINDOWS.join(', ')}` })
+        .send(apiError('bad_window', `window must be one of: ${COVERAGE_WINDOWS.join(', ')}`))
     }
 
     const requested = req.query.network
     if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
-      return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+      return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
     }
     const network: NetworkName = (requested as NetworkName) ?? (req.network ?? activeNetwork)
 
@@ -52,7 +53,7 @@ export async function registerCoverageRoutes(app: FastifyInstance) {
       req.log.error({ err }, 'Failed to compute overall coverage')
       return reply
         .status(500)
-        .send({ error: `Coverage computation failed: ${(err as Error).message}` })
+        .send(apiError('internal_error', `Coverage computation failed: ${(err as Error).message}`))
     }
   })
 
@@ -63,19 +64,19 @@ export async function registerCoverageRoutes(app: FastifyInstance) {
   }>('/coverage/:asset', { config: { public: true } }, async (req, reply) => {
     const { asset } = req.params
     if (!asset || asset.trim() === '') {
-      return reply.status(400).send({ error: 'Asset parameter is required' })
+      return reply.status(400).send(apiError('missing_parameter', 'Asset parameter is required'))
     }
 
     const window = (req.query.window ?? '24h') as CoverageWindow
     if (!(window in WINDOW_HOURS)) {
       return reply
         .status(400)
-        .send({ error: `window must be one of: ${COVERAGE_WINDOWS.join(', ')}` })
+        .send(apiError('bad_window', `window must be one of: ${COVERAGE_WINDOWS.join(', ')}`))
     }
 
     const requested = req.query.network
     if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
-      return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+      return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
     }
     const network: NetworkName = (requested as NetworkName) ?? (req.network ?? activeNetwork)
 
@@ -85,12 +86,12 @@ export async function registerCoverageRoutes(app: FastifyInstance) {
     } catch (err) {
       const msg = (err as Error).message || ''
       if (msg.includes('Invalid asset') || msg.includes('must include its issuer')) {
-        return reply.status(400).send({ error: msg })
+        return reply.status(400).send(apiError('invalid_parameter', msg))
       }
       req.log.error({ asset, err }, 'Failed to compute asset coverage')
       return reply
         .status(500)
-        .send({ error: `Asset coverage computation failed: ${msg}` })
+        .send(apiError('internal_error', `Asset coverage computation failed: ${msg}`))
     }
   })
 }

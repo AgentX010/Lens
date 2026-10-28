@@ -5,6 +5,7 @@ import { poolsResponseSchema } from '../api/schemas'
 import { POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT, decodeCursor, encodeCursor, parseLimit, slicePage } from '../pagination'
 import { formatDecimal, resolveDecimalFormat } from '../utils/decimals'
 import { estimatedLpReturns } from '../pricing/lpReturns'
+import { apiError } from '../errors'
 import '../middleware/network' // declares req.network on the FastifyRequest type
 
 /**
@@ -129,7 +130,7 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
       schema: {
         response: {
           200: poolsResponseSchema,
-          400: { type: 'object', required: ['error'], properties: { error: { type: 'string' } } },
+          400: { type: 'object', required: ['error'], properties: { error: { type: 'string' }, code: { type: 'string' } } },
         },
       },
     },
@@ -142,11 +143,11 @@ export async function registerPoolsRoutes(app: FastifyInstance) {
 
       const parsedLimit = parseLimit(req.query.limit, POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT)
       if ('error' in parsedLimit) {
-        return reply.status(400).send({ error: parsedLimit.error })
+        return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
       }
 
       const outcome = await listPools(network, { limit: parsedLimit.limit, cursor: req.query.cursor })
-      if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
+      if (!outcome.ok) return reply.status(400).send(apiError('invalid_parameter', outcome.error))
 
       return {
         pools: outcome.pools.map(r => ({

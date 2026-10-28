@@ -7,6 +7,7 @@ import { activeNetwork, type NetworkName } from '../config'
 import { findOverlappingGaps } from '../backfill/gaps'
 import { resolveDecimalFormat } from '../utils/decimals'
 
+import { apiError } from '../errors'
 export const TWAP_WINDOW_MIN_MINUTES = 1
 export const TWAP_WINDOW_MAX_MINUTES = 1440
 export const TWAP_WINDOW_DEFAULT_MINUTES = 60
@@ -117,7 +118,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         // A driver error message can carry the connection string, and so the
         // Postgres credentials. Log it; never put it in the response body.
         log.error({ err }, 'TWAP computation failed')
-        return reply.status(500).send({ error: 'TWAP computation failed' })
+        return reply.status(500).send(apiError('internal_error', 'TWAP computation failed'))
       }
     }
   )
@@ -195,7 +196,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       } catch (err) {
         // Same as TWAP above: the driver message can contain credentials.
         log.error({ err }, 'VWAP computation failed')
-        return reply.status(500).send({ error: 'VWAP computation failed' })
+        return reply.status(500).send(apiError('internal_error', 'VWAP computation failed'))
       }
     }
   )

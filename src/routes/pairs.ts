@@ -14,6 +14,7 @@ import {
 import '../middleware/network' // declares req.network on the FastifyRequest type
 import { admin_auth_failures_total } from '../metrics'
 
+import { apiError } from '../errors'
 export interface PairWithLatest {
   pairKey: string
   assetA: AssetId
@@ -136,14 +137,14 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const parsedLimit = parseLimit(req.query.limit, PAIRS_DEFAULT_LIMIT, PAIRS_MAX_LIMIT)
       if ('error' in parsedLimit) {
-        return reply.status(400).send({ error: parsedLimit.error })
+        return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
       }
 
       const outcome = await listPairs(req.network ?? activeNetwork, {
         limit: parsedLimit.limit,
         cursor: req.query.cursor,
       })
-      if (!outcome.ok) return reply.status(400).send({ error: outcome.error })
+      if (!outcome.ok) return reply.status(400).send(apiError('invalid_parameter', outcome.error))
       return { pairs: outcome.pairs, nextCursor: outcome.nextCursor, hasMore: outcome.hasMore }
     }
   )
@@ -168,27 +169,27 @@ export async function registerPairsRoutes(app: FastifyInstance) {
     const { assetA: assetAStr, assetB: assetBStr } = req.body ?? {}
 
     if (!assetAStr || !assetBStr) {
-      return reply.status(400).send({ error: 'assetA and assetB are required' })
+      return reply.status(400).send(apiError('missing_parameter', 'assetA and assetB are required'))
     }
 
     const assetA = parseAssetStr(assetAStr)
     if (!assetA) {
       return reply.status(400).send({
-        error: `Invalid assetA format "${assetAStr}". Expected CODE or CODE:ISSUER (e.g. XLM:native or USDC:GBBD47...)`,
+        ...apiError('invalid_parameter', `Invalid assetA format "${assetAStr}". Expected CODE or CODE:ISSUER (e.g. XLM:native or USDC:GBBD47...)`),
       })
     }
 
     const assetB = parseAssetStr(assetBStr)
     if (!assetB) {
       return reply.status(400).send({
-        error: `Invalid assetB format "${assetBStr}". Expected CODE or CODE:ISSUER (e.g. XLM:native or USDC:GBBD47...)`,
+        ...apiError('invalid_parameter', `Invalid assetB format "${assetBStr}". Expected CODE or CODE:ISSUER (e.g. XLM:native or USDC:GBBD47...)`),
       })
     }
 
     const pairKey = makePairKey(assetA, assetB)
 
     if (hasPair(pairKey)) {
-      return reply.status(409).send({ error: `Pair ${pairKey} is already being watched` })
+      return reply.status(409).send(apiError('pair_already_watched', `Pair ${pairKey} is already being watched`))
     }
 
     const pair = { assetA, assetB, pairKey }

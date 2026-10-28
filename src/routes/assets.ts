@@ -12,6 +12,7 @@ import {
   assetDetailResponseSchema,
 } from '../api/schemas'
 
+import { apiError } from '../errors'
 export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
   // GET /assets — list tracked assets with metadata and verification status
   app.get<{
@@ -69,7 +70,7 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
       const network = (req.network ?? activeNetwork) as NetworkName
       const rawCode = req.params.code
       if (!rawCode || rawCode.trim().length === 0) {
-        return reply.status(400).send({ error: 'Asset code is required' })
+        return reply.status(400).send(apiError('missing_parameter', 'Asset code is required'))
       }
 
       let parsedCode = rawCode.trim()
@@ -111,7 +112,7 @@ export async function registerAssetRoutes(app: FastifyInstance): Promise<void> {
 
       if (!matched) {
         return reply.status(404).send({
-          error: `Asset "${rawCode}" not found on ${network}`,
+          ...apiError('not_found', `Asset "${rawCode}" not found on ${network}`),
         })
       }
 
