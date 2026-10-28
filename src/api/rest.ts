@@ -131,7 +131,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         return reply.status(503).send({
           ok: false,
           status: 'unhealthy',
-          ...apiError('upstream_unavailable', 'Database unavailable'),
+          error: 'Database unavailable',
           pagingCondition: 'DATABASE_DOWN',
         })
       }
