@@ -9,15 +9,10 @@ import {
   slicePage,
 } from '../pagination'
 import '../middleware/network' // declares req.network on the FastifyRequest type
-import { apiError } from '../errors'
-import {
-  parseLimit,
-  encodeCursor,
-  decodeCursor,
-  slicePage,
-  HISTORY_DEFAULT_LIMIT,
-} from '../pagination'
+import { findOverlappingGaps } from '../backfill/gaps'
+import { formatPrice, formatVolume } from '../pricing/precision'
 
+import { apiError } from '../errors'
 /** Supported aggregation intervals → bucket width in seconds. */
 export const HISTORY_INTERVAL_SECONDS: Record<string, number> = {
   '1m': 60,
@@ -120,7 +115,7 @@ export async function queryHistory(
      FROM price_snapshots
      WHERE pair = $2 AND network = $5
        AND ts >= $3
-       AND ts <= $4${cursorCondition}
+       AND ts < $4${cursorCondition}
      GROUP BY floor(EXTRACT(EPOCH FROM ts) / $1)
      ORDER BY bucket ASC${limitClause}`,
     params
@@ -160,16 +155,8 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
   // clause before grouping, so a snapshot inserted mid-paging cannot shift a
   // page boundary the way an offset would.
   app.get<{
-    Querystring: {
-      pair?: string
-      from?: string
-      to?: string
-      interval?: string
-      format?: string
-      cursor?: string
-      limit?: string
-    }
-  }>('/prices/history', async (req, reply) => {
+    Querystring: { pair?: string; from?: string; to?: string; interval?: string; format?: string; cursor?: string; limit?: string }
+  }>('/prices/history', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { pair } = req.query
     if (!pair) {
       return reply.status(400).send(apiError('missing_parameter', 'pair query parameter is required'))
@@ -184,9 +171,9 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
     const interval = req.query.interval ?? '1m'
     const intervalSecs = HISTORY_INTERVAL_SECONDS[interval]
     if (!intervalSecs) {
-      return reply.status(400).send(
-        apiError('bad_interval', `interval must be one of: ${Object.keys(HISTORY_INTERVAL_SECONDS).join(', ')}`),
-      )
+      return reply.status(400).send({
+        ...apiError('bad_interval', `interval must be one of: ${Object.keys(HISTORY_INTERVAL_SECONDS).join(', ')}`),
+      })
     }
 
     const parsedLimit = parseLimit(req.query.limit, HISTORY_DEFAULT_LIMIT, MAX_HISTORY_POINTS)
@@ -209,26 +196,6 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
       }
     }
 
-    const parsedLimit = parseLimit(req.query.limit, HISTORY_DEFAULT_LIMIT, MAX_HISTORY_POINTS)
-    if ('error' in parsedLimit) {
-      return reply.status(400).send({ error: parsedLimit.error })
-    }
-    const { limit } = parsedLimit
-
-    let afterTs: Date | undefined
-    if (req.query.cursor) {
-      const decoded = decodeCursor(req.query.cursor)
-      if (decoded === null) {
-        return reply.status(400).send({ error: 'Invalid cursor format' })
-      }
-      if (decoded !== 'skip') {
-        afterTs = new Date(String(decoded.value))
-        if (isNaN(afterTs.getTime())) {
-          return reply.status(400).send({ error: 'Invalid cursor format' })
-        }
-      }
-    }
-
     const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 24 * 60 * 60 * 1000)
     const to = req.query.to ? new Date(req.query.to) : new Date()
 
@@ -245,9 +212,9 @@ export async function registerHistoryRoutes(app: FastifyInstance) {
     // Guard against unbounded scans: cap the number of buckets the window can produce.
     const spanSecs = (to.getTime() - from.getTime()) / 1000
     if (spanSecs / intervalSecs > MAX_HISTORY_POINTS) {
-      return reply.status(400).send(
-        apiError('invalid_parameter', `requested window is too large for interval=${interval} (max ${MAX_HISTORY_POINTS} points); narrow the range or use a coarser interval`),
-      )
+      return reply.status(400).send({
+        ...apiError('invalid_parameter', `requested window is too large for interval=${interval} (max ${MAX_HISTORY_POINTS} points); narrow the range or use a coarser interval`),
+      })
     }
 
     const network = req.network ?? activeNetwork

@@ -17,22 +17,15 @@ import {
   priceResponseSchema,
   routeResponseSchema,
   historyResponseSchema,
-  poolsResponseSchema,
   depthResponseSchema,
   impactResponseSchema,
   installResponseValidation,
 } from './schemas'
-import { getDepth } from '../pricing/depth'
-import { apiError } from '../errors'
-import {
-  parseLimit,
-  encodeCursor,
-  decodeCursor,
-  slicePage,
-  POOLS_DEFAULT_LIMIT,
-  POOLS_MAX_LIMIT,
-} from '../pagination'
+import { findOverlappingGaps } from '../backfill/gaps'
+import { getDepth, getImpact } from '../pricing/depth'
+import { getRetentionPath } from '../jobs/retentionStatus'
 
+import { apiError } from '../errors'
 function makePairKey(a: string, b: string): string {
   return [a, b].sort().join('/')
 }
@@ -138,7 +131,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         return reply.status(503).send({
           ok: false,
           status: 'unhealthy',
-          error: 'Database unavailable',
+          ...apiError('upstream_unavailable', 'Database unavailable'),
           pagingCondition: 'DATABASE_DOWN',
         })
       }
@@ -183,6 +176,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         lastIndexedLedger,
         lastProcessedAt,
         ingestLagSeconds,
+        retentionPath: getRetentionPath(),
         // #508: whether the admin surface is usable at all, so an operator
         // can tell "I sent the wrong token" from "this deployment has no
         // ADMIN_TOKEN" without guessing from a 401. It reports only that the
@@ -233,7 +227,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       if (rawThreshold !== undefined) {
         staleThreshold = parseInt(rawThreshold, 10)
         if (isNaN(staleThreshold) || staleThreshold <= 0) {
-          return reply.status(400).send({ error: 'staleThreshold must be a positive integer' })
+          return reply.status(400).send(apiError('invalid_parameter', 'staleThreshold must be a positive integer'))
         }
       }
 
@@ -287,11 +281,10 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const amount = parseFloat(req.query.amount ?? '1000')
       // Validate amount before the pair check: a malformed request parameter
       // is a 400 regardless of whether the pair is watched.
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send({ error: 'amount must be a positive number' })
+      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
       if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
-      if (isNaN(amount) || amount <= 0) return reply.status(400).send(apiError('invalid_parameter', 'amount must be a positive number'))
 
       const decimalFormat = resolveDecimalFormat(req)
       const routeInfo = await getBestRoute(pair.assetA, pair.assetB, pair.pairKey, amount, network)
@@ -382,78 +375,9 @@ export async function registerRESTRoutes(app: FastifyInstance) {
     }
   )
 
-  // GET /pools?cursor=&limit=
-  //
-  // Latest snapshot per pool for one network, without reading history. The pool
-  // ids are discovered with a recursive "skip scan" over the
-  // (network, pool_id, timestamp DESC) index (jump to the next distinct pool_id
-  // each step), then one LIMIT 1 index probe per pool fetches its newest row.
-  // Cost is O(pools x log n); the old DISTINCT ON sorted every row of every
-  // network. A quiet pool is kept with its real `timestamp`, never dropped.
-  //
-  // Paginated keyset-style on pool_id ASC (default limit 50, max 200): the
-  // cursor carries the last page's pool_id, and the skip scan's seed query
-  // resumes strictly after it, so a pool inserted mid-paging cannot shift a
-  // page boundary the way an OFFSET would.
-  app.get<{ Querystring: { cursor?: string; limit?: string } }>(
-    '/pools',
-    { schema: { response: { 200: poolsResponseSchema } } },
-    async (req, reply) => {
-      const network = req.network ?? activeNetwork
-
-      const parsedLimit = parseLimit(req.query.limit, POOLS_DEFAULT_LIMIT, POOLS_MAX_LIMIT)
-      if ('error' in parsedLimit) {
-        return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
-      }
-      const { limit } = parsedLimit
-
-      const params: unknown[] = [network]
-      let seedFilter = ''
-      if (req.query.cursor) {
-        const decoded = decodeCursor(req.query.cursor)
-        if (decoded === null) {
-          return reply.status(400).send(apiError('invalid_parameter', 'Invalid cursor format'))
-        }
-        if (decoded !== 'skip') {
-          params.push(decoded.value)
-          seedFilter = ` AND pool_id > $${params.length}`
-        }
-      }
-      params.push(limit + 1) // Fetch one extra to determine hasMore
-
-      const result = await pgPool.query(
-        `WITH RECURSIVE ids AS (
-           (SELECT pool_id FROM pool_snapshots WHERE network = $1${seedFilter} ORDER BY pool_id LIMIT 1)
-           UNION ALL
-           SELECT (SELECT s.pool_id FROM pool_snapshots s
-                    WHERE s.network = $1 AND s.pool_id > ids.pool_id
-                    ORDER BY s.pool_id LIMIT 1)
-             FROM ids
-            WHERE ids.pool_id IS NOT NULL
-         )
-         SELECT l.pool_id, l.asset_a, l.asset_b,
-                l.reserve_a::float, l.reserve_b::float, l.spot_price::float, l.fee_bp, l.timestamp
-           FROM ids
-          CROSS JOIN LATERAL (
-                SELECT * FROM pool_snapshots s
-                 WHERE s.network = $1 AND s.pool_id = ids.pool_id
-                 ORDER BY s.timestamp DESC
-                 LIMIT 1
-               ) l
-          WHERE ids.pool_id IS NOT NULL
-          ORDER BY l.pool_id ASC
-          LIMIT $${params.length}`,
-        params
-      )
-
-      const { data, hasMore } = slicePage(result.rows, limit)
-      const nextCursor =
-        hasMore && data.length > 0
-          ? encodeCursor(data[data.length - 1].pool_id, data[data.length - 1].pool_id)
-          : null
-      return { pools: data, nextCursor, hasMore }
-    }
-  )
+  // GET /pools?cursor=&limit= lives in src/routes/pools.ts, next to /pairs and
+  // /screener, so the `lens_get_pools` MCP tool runs the same listPools this
+  // route does; registerPoolsRoutes() is called from app.ts.
 
   // GET /price/:assetA/:assetB/depth?amount=1000
   app.get<{
@@ -512,7 +436,7 @@ export async function registerRESTRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const network = req.network ?? activeNetwork
       const pair = findPair(assetA, assetB, network)
-      if (!pair) return reply.status(404).send({ error: `Pair ${assetA}/${assetB} not watched on ${network}` })
+      if (!pair) return reply.status(404).send(apiError('unwatched_pair', `Pair ${assetA}/${assetB} not watched on ${network}`))
 
       const thresholds = req.query.thresholds
         ? req.query.thresholds.split(',').map(Number)
@@ -525,11 +449,11 @@ export async function registerRESTRoutes(app: FastifyInstance) {
         thresholds.some(value => !Number.isFinite(value) || value <= 0) ||
         !Number.isFinite(liquidityFraction) || liquidityFraction <= 0 || liquidityFraction > 1
       ) {
-        return reply.status(400).send({ error: 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1' })
+        return reply.status(400).send(apiError('invalid_parameter', 'thresholds must be positive numbers and liquidityFraction must be between 0 and 1'))
       }
 
       const impact = await getImpact(pair.pairKey, { thresholds, liquidityFraction }, network)
-      if (!impact) return reply.status(404).send({ error: `No AMM liquidity available for ${assetA}/${assetB}` })
+      if (!impact) return reply.status(404).send(apiError('unknown_pair', `No AMM liquidity available for ${assetA}/${assetB}`))
       return { assetA: pair.assetA.code, assetB: pair.assetB.code, pairKey: pair.pairKey, ...impact }
     }
   )

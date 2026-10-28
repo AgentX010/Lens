@@ -3,7 +3,7 @@ import { pgPool } from '../db'
 import { getCachedSnapshot, setCachedSnapshot } from '../redis'
 import { config, getNetworkConfig, activeNetwork, type NetworkName } from '../config'
 import { snapshotResponseSchema } from '../api/schemas'
-import { sendInternalError } from '../errors'
+import { sendInternalError, apiError } from '../errors'
 import type { AssetId, WatchedPair } from '../types'
 
 /**
@@ -232,7 +232,7 @@ export async function registerSnapshotRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const requested = req.query.network
       if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
-        return reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+        return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
       }
       const network: NetworkName = (requested as NetworkName) ?? activeNetwork
       const ttl = config.cache.snapshotTtl

@@ -9,6 +9,7 @@ import { registerGraphQL } from './api/graphql'
 import { registerWebhookRoutes } from './routes/webhooks'
 import { registerCandleRoutes } from './routes/candles'
 import { registerPairsRoutes } from './routes/pairs'
+import { registerPoolsRoutes } from './routes/pools'
 import { registerScreenerRoutes } from './routes/screener'
 import { registerMoversRoutes } from './routes/movers'
 import { registerHistoryRoutes } from './api/history'
@@ -36,14 +37,19 @@ import { registerCorrelationRoutes } from './routes/correlation'
 import { registerDiscoveryRoutes } from './routes/discovery'
 import { registerSnapshotRoutes } from './routes/snapshot'
 import { registerVenueRoutes } from './routes/venues'
+import { registerAssetRoutes } from './routes/assets'
 import { registerSettleRoute } from './routes/facilitator'
 import { registerApiVersioning, rewriteVersionedApiUrl } from './api/versioning'
 import { registerDispersionRoutes } from './routes/dispersion'
 import { registerHealthRoutes } from './routes/health'
 import { registerTvlRoutes } from './routes/tvl'
 import { registerCachePolicy } from './middleware/cachePolicy'
-import { getMetrics } from './metrics'
-import { apiError } from './errors'
+import { registerFiatRoutes } from './routes/fiat'
+import { registerGlobalRateLimit, parseGlobalRateLimit } from './middleware/globalRateLimit'
+import { getMetrics, rate_limit_rejections_total } from './metrics'
+import { loggerOptions, createDestination } from './logger'
+import { isPoolExhaustionError, recordPoolExhaustion } from './db'
+import { createCorsDelegator, type CorsConfig } from './cors'
 
 /**
  * Routes the rate limiter skips.
@@ -163,13 +169,35 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     max: (req) => req.apiKey?.ratePerMin ?? ipRateLimitMax,
     timeWindow: '1 minute',
     keyGenerator: (req) => req.apiKey?.id ?? req.ip,
-    allowList: (req) => req.url === '/status',
-    errorResponseBuilder: (req, context) => ({
-      statusCode: 429,
-      ...apiError('rate_limited', 'Too Many Requests'),
-      message: `Rate limit exceeded, retry in ${context.after}`,
-      retryAfter: context.after
-    })
+    // PROBE_PATHS, not just /status: /live and /ready are polled by the
+    // platform on a fixed interval and must never be rate limited.
+    allowList: (req) => PROBE_PATHS.has(req.url),
+    errorResponseBuilder: (req, context) => {
+      rate_limit_rejections_total.inc({ scope: req.apiKey ? 'key' : 'ip' })
+      const seconds = typeof context.after === 'number' ? context.after : (Math.ceil(context.ttl / 1000) || 60)
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        code: 'rate_limited',
+        message: `Rate limit exceeded, retry in ${seconds} seconds`,
+        retryAfter: seconds,
+      }
+    },
+  })
+
+  // Ensure Retry-After header is always present on 429 responses (#272)
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode === 429 && !reply.hasHeader('retry-after')) {
+      try {
+        const body = typeof payload === 'string' ? JSON.parse(payload) : payload
+        if (body?.retryAfter) {
+          reply.header('Retry-After', String(body.retryAfter))
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+    return payload
   })
 
   // The per-instance ceiling runs after the per-key/IP limiter. Health checks
@@ -214,6 +242,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerWebhookRoutes(app)
   await registerCandleRoutes(app)
   await registerPairsRoutes(app)
+  await registerPoolsRoutes(app)
   await registerScreenerRoutes(app)
   await registerMoversRoutes(app)
   await registerHistoryRoutes(app)
@@ -233,6 +262,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerSnapshotRoutes(app)
   await registerVenueRoutes(app)
   await registerFiatRoutes(app)
+  await registerAssetRoutes(app)
   await registerSettleRoute(app)
   await registerDispersionRoutes(app)
   await registerHealthRoutes(app)

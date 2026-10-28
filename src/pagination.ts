@@ -97,7 +97,7 @@ export function decodeCursor(raw: string): DecodedCursor {
   let value: unknown
   let id: unknown
   try {
-    ;[value, id] = parsed as [unknown, unknown]
+    ;[value, id] = parsed as Iterable<unknown>
   } catch {
     return null
   }

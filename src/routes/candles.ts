@@ -1,24 +1,20 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
-import { apiError } from '../errors'
 import {
-  parseLimit,
-  encodeCursor,
-  decodeCursor,
-  slicePage,
   CANDLES_DEFAULT_LIMIT,
   CANDLES_MAX_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  parseLimit,
+  slicePage,
 } from '../pagination'
+import { activeNetwork, type NetworkName } from '../config'
+import { findOverlappingGaps } from '../backfill/gaps'
+import '../middleware/network' // declares req.network on the FastifyRequest type
+import { formatPrice, formatVolume } from '../pricing/precision'
 
-const INTERVAL_SECONDS: Record<string, number> = {
-  '1m': 60,
-  '5m': 300,
-  '15m': 900,
-  '1h': 3600,
-  '4h': 14_400,
-  '1d': 86_400,
-}
 
+import { apiError } from '../errors'
 const INTERVAL_SECONDS: Record<string, number> = {
   '1m': 60,
   '5m': 300,
@@ -50,26 +46,20 @@ export async function registerCandleRoutes(app: FastifyInstance) {
   app.get<{
     Params: { assetA: string; assetB: string }
     Querystring: { interval?: string; from?: string; to?: string; cursor?: string; limit?: string }
-  }>('/candles/:assetA/:assetB', async (req, reply) => {
+  }>('/candles/:assetA/:assetB', { config: { scope: 'read:history' } }, async (req, reply) => {
     const { assetA, assetB } = req.params
     const interval = req.query.interval ?? '1h'
     const intervalSecs = INTERVAL_SECONDS[interval]
 
     if (!intervalSecs) {
-      return reply.status(400).send(
-        apiError('bad_interval', `interval must be one of: ${Object.keys(INTERVAL_SECONDS).join(', ')}`),
-      )
+      return reply.status(400).send({
+        ...apiError('bad_interval', `interval must be one of: ${Object.keys(INTERVAL_SECONDS).join(', ')}`),
+      })
     }
 
     const parsedLimit = parseLimit(req.query.limit, CANDLES_DEFAULT_LIMIT, CANDLES_MAX_LIMIT)
     if ('error' in parsedLimit) {
       return reply.status(400).send(apiError('invalid_parameter', parsedLimit.error))
-    }
-    const { limit } = parsedLimit
-
-    const parsedLimit = parseLimit(req.query.limit, CANDLES_DEFAULT_LIMIT, CANDLES_MAX_LIMIT)
-    if ('error' in parsedLimit) {
-      return reply.status(400).send({ error: parsedLimit.error })
     }
     const { limit } = parsedLimit
 
@@ -93,7 +83,10 @@ export async function registerCandleRoutes(app: FastifyInstance) {
       return reply.status(400).send(apiError('invalid_parameter', 'to must be a valid ISO 8601 date'))
     }
 
-    const params: unknown[] = [intervalSecs, pairKey, from, to]
+    // $5 is the network predicate in the WHERE clause below. It has to be
+    // pushed here, before the optional cursor and the limit, or those take
+    // its placeholder and every row is compared against a row count.
+    const params: unknown[] = [intervalSecs, pairKey, from, to, network]
     let cursorCondition = ''
     if (req.query.cursor) {
       const decoded = decodeCursor(req.query.cursor)
@@ -102,7 +95,7 @@ export async function registerCandleRoutes(app: FastifyInstance) {
       }
       if (decoded !== 'skip') {
         params.push(Number(decoded.value))
-        cursorCondition = ` AND floor(EXTRACT(EPOCH FROM timestamp) / $1) * $1 > $${params.length}`
+        cursorCondition = ` AND floor(EXTRACT(EPOCH FROM observed_at) / $1) * $1 > $${params.length}`
       }
     }
     params.push(limit + 1) // Fetch one extra to determine hasMore
@@ -118,9 +111,9 @@ export async function registerCandleRoutes(app: FastifyInstance) {
        FROM price_points
        WHERE pair_key = $2
          AND network = $5
-         AND timestamp >= $3
-         AND timestamp <= $4${cursorCondition}
-       GROUP BY floor(EXTRACT(EPOCH FROM timestamp) / $1)
+         AND observed_at >= $3
+         AND observed_at < $4${cursorCondition}
+       GROUP BY floor(EXTRACT(EPOCH FROM observed_at) / $1)
        ORDER BY time ASC
        LIMIT $${params.length}`,
       params

@@ -3,8 +3,8 @@ import { x402_payments_received_total } from '../metrics'
 import { checkQuota, recordUsage, parseCents, getQuotaConfig } from '../x402/metering'
 import { X402_NETWORK_LABEL, paymentAddressFor, isX402Configured, getX402ResourceServer } from '../x402/network'
 import fp from 'fastify-plugin'
-import './network' // declares req.network on the FastifyRequest type
 import { apiError } from '../errors'
+import './network' // declares req.network on the FastifyRequest type
 
 export interface GatedRoute {
   readonly path: string
@@ -109,7 +109,7 @@ async function x402Plugin(app: FastifyInstance) {
     const network = req.network ?? 'testnet'
     const paymentAddress = paymentAddressFor(network)
     if (!paymentAddress) {
-      reply.status(402).send(apiError('payment_required', `x402 payments are not configured for network "${network}"`))
+      reply.status(402).send(apiError('unsupported', `x402 payments are not configured for network "${network}"`))
       return
     }
 

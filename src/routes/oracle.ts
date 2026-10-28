@@ -2,9 +2,15 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { activeNetwork, type NetworkName } from '../config'
 import type { OracleAdapter } from '../ingest/oracles/adapter'
 import { reflectorOracleAdapter } from '../ingest/oracles/reflector'
-import { pgPool } from '../db'
-import { apiError } from '../errors'
+import {
+  compareOracles,
+  computeOracleSummaryStatistics,
+  queryOracleComparisonHistory,
+  ORACLE_HISTORY_WINDOWS,
+  type OracleHistoryWindow,
+} from '../services/oracleComparison'
 
+import { apiError } from '../errors'
 const oracleAdapters: OracleAdapter[] = [reflectorOracleAdapter]
 
 interface HistoryQuery {
@@ -23,14 +29,14 @@ function parseHistoryQueryParams(
 ) {
   const { asset } = req.params
   if (!asset) {
-    reply.status(400).send({ error: 'Asset parameter is required' })
+    reply.status(400).send(apiError('missing_parameter', 'Asset parameter is required'))
     return null
   }
   const assetCode = asset.toUpperCase()
 
   const requestedNetwork = req.query.network
   if (requestedNetwork !== undefined && requestedNetwork !== 'testnet' && requestedNetwork !== 'mainnet') {
-    reply.status(400).send({ error: 'network must be one of: testnet, mainnet' })
+    reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
     return null
   }
   const network: NetworkName = (requestedNetwork as NetworkName) ?? req.network ?? activeNetwork
@@ -38,7 +44,7 @@ function parseHistoryQueryParams(
   const windowParam = req.query.window
   if (windowParam !== undefined && !(windowParam in ORACLE_HISTORY_WINDOWS)) {
     reply.status(400).send({
-      error: `window must be one of: ${Object.keys(ORACLE_HISTORY_WINDOWS).join(', ')}`,
+      ...apiError('bad_window', `window must be one of: ${Object.keys(ORACLE_HISTORY_WINDOWS).join(', ')}`),
     })
     return null
   }
@@ -49,14 +55,14 @@ function parseHistoryQueryParams(
   if (req.query.from !== undefined) {
     fromDate = new Date(req.query.from)
     if (isNaN(fromDate.getTime())) {
-      reply.status(400).send({ error: 'from must be a valid ISO 8601 date' })
+      reply.status(400).send(apiError('invalid_parameter', 'from must be a valid ISO 8601 date'))
       return null
     }
   }
   if (req.query.to !== undefined) {
     toDate = new Date(req.query.to)
     if (isNaN(toDate.getTime())) {
-      reply.status(400).send({ error: 'to must be a valid ISO 8601 date' })
+      reply.status(400).send(apiError('invalid_parameter', 'to must be a valid ISO 8601 date'))
       return null
     }
   }
@@ -67,7 +73,7 @@ function parseHistoryQueryParams(
 
   if (fromDate !== undefined && toDate !== undefined) {
     if (fromDate.getTime() > toDate.getTime()) {
-      reply.status(400).send({ error: 'from must be earlier than to' })
+      reply.status(400).send(apiError('invalid_parameter', 'from must be earlier than to'))
       return null
     }
     from = fromDate
@@ -76,7 +82,7 @@ function parseHistoryQueryParams(
   } else if (fromDate !== undefined && toDate === undefined) {
     to = new Date()
     if (fromDate.getTime() > to.getTime()) {
-      reply.status(400).send({ error: 'from must be earlier than to' })
+      reply.status(400).send(apiError('invalid_parameter', 'from must be earlier than to'))
       return null
     }
     from = fromDate
@@ -99,7 +105,7 @@ function parseHistoryQueryParams(
   if (req.query.band !== undefined) {
     const parsedBand = parseFloat(req.query.band)
     if (isNaN(parsedBand) || parsedBand < 0) {
-      reply.status(400).send({ error: 'band must be a non-negative number' })
+      reply.status(400).send(apiError('invalid_parameter', 'band must be a non-negative number'))
       return null
     }
     bandPct = parsedBand
@@ -109,7 +115,7 @@ function parseHistoryQueryParams(
   if (req.query.limit !== undefined) {
     const parsedLimit = parseInt(req.query.limit, 10)
     if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 5000) {
-      reply.status(400).send({ error: 'limit must be an integer between 1 and 5000' })
+      reply.status(400).send(apiError('invalid_parameter', 'limit must be an integer between 1 and 5000'))
       return null
     }
     limit = parsedLimit
@@ -137,7 +143,7 @@ export async function registerOracleRoutes(
     async (req, reply) => {
       const { asset } = req.params
       if (!asset) {
-        return reply.status(400).send({ error: 'Asset parameter is required' })
+        return reply.status(400).send(apiError('missing_parameter', 'Asset parameter is required'))
       }
       const assetCode = asset.toUpperCase()
       const requestedNetwork = req.query.network
@@ -146,37 +152,22 @@ export async function registerOracleRoutes(
       }
       const network: NetworkName = (requestedNetwork as NetworkName) ?? req.network ?? activeNetwork
 
-      const [dbResult, oracleResults] = await Promise.all([
-        pgPool.query(
-          `SELECT
-             COALESCE(SUM(price::numeric * base_volume::numeric), 0)
-               / NULLIF(SUM(base_volume::numeric), 0) AS vwap
-           FROM price_points
-           WHERE (asset_a = $1 OR asset_b = $1)
-             AND network = $2
-             AND timestamp > NOW() - INTERVAL '5 minutes'
-           GROUP BY pair_key
-           LIMIT 1`,
-          [assetCode, network]
-        ),
-        Promise.all(adapters.map(async adapter => {
-          if (!adapter.isConfigured(network)) {
-            return { name: adapter.name, configured: false as const, quote: null }
-          }
-          try {
-            return { name: adapter.name, configured: true as const, quote: await adapter.getPrice(assetCode, network) }
-          } catch {
-            // A failed oracle should be visible in the response instead of
-            // causing the comparison endpoint to silently omit that source.
-            return { name: adapter.name, configured: true as const, quote: null }
-          }
-        }))
-      ])
-
-      const lensPrice = dbResult.rows[0] ? parseFloat(dbResult.rows[0].vwap) : null
-      const anyOracleConfigured = oracleResults.some(result => result.configured)
-      if (lensPrice === null && !anyOracleConfigured) {
-        return reply.status(404).send(apiError('unknown_pair', `No price data found for asset ${assetCode}`))
+      const comparison = await compareOracles(assetCode, network, adapters)
+      // CHANGE FROM UPSTREAM (#262): Return 200 with status:"no_data" instead of 404
+      // when both Lens and all oracles have no data. The asset code itself is valid,
+      // the query succeeded — there is just no data yet. A 404 would imply the asset
+      // is invalid or the endpoint does not exist.
+      if (!comparison) {
+        return {
+          asset: assetCode,
+          network,
+          lens: null,
+          reflector: null,
+          deviationPct: null,
+          status: 'no_data',
+          fetchedAt: new Date().toISOString(),
+          oracles: [],
+        }
       }
       return comparison
     }

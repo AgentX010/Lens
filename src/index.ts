@@ -32,6 +32,7 @@ import { loadPersistedPairs, getActivePairs } from './pairsRegistry'
 import { markHealthy, recordCrash } from './ingester/restart'
 import { markBootComplete } from './health'
 import { startSep40Publisher } from './publish/publisher'
+import { setRetentionPath } from './jobs/retentionStatus'
 
 const log = createLogger('startup')
 
@@ -155,18 +156,44 @@ async function main() {
   await safePrune()
 
   {
-    let retentionQueue: ReturnType<typeof createSnapshotRetentionQueue> | undefined
-    let retentionWorker: ReturnType<typeof startSnapshotRetentionWorker> | undefined
+    let fallbackTimer: NodeJS.Timeout | undefined
+    let recoveryTimer: NodeJS.Timeout | undefined
+
+    const startQueueRetention = async () => {
+      await redis.ping()
+      const queue = createSnapshotRetentionQueue()
+      const worker = startSnapshotRetentionWorker()
+      try {
+        await scheduleSnapshotRetention(queue)
+        if (fallbackTimer) clearInterval(fallbackTimer)
+        fallbackTimer = undefined
+        if (recoveryTimer) clearInterval(recoveryTimer)
+        recoveryTimer = undefined
+        setRetentionPath('redis_queue')
+        // Logged here rather than at the call site so it covers both the boot
+        // attempt and a later recovery: a service that quietly climbed back
+        // onto the queue after an outage is otherwise only visible in a metric.
+        log.info('snapshot retention worker started')
+        return true
+      } catch (err) {
+        await Promise.allSettled([queue.close(), worker.close()])
+        throw err
+      }
+    }
+
     try {
-      retentionQueue = createSnapshotRetentionQueue()
-      retentionWorker = startSnapshotRetentionWorker()
-      await scheduleSnapshotRetention(retentionQueue)
-      log.info('snapshot retention worker started')
+      await startQueueRetention()
     } catch (err) {
-      log.warn({ err }, 'snapshot retention worker skipped (redis unavailable)')
-      log.warn('falling back to an in-process hourly prune')
-      await Promise.allSettled([retentionQueue?.close(), retentionWorker?.close()])
-      setInterval(() => { void safePrune() }, 60 * 60 * 1000).unref()
+      log.warn({ err }, 'snapshot retention worker unavailable; using hourly in-process prune')
+      setRetentionPath('in_process')
+      // The SQL prune uses FOR UPDATE SKIP LOCKED, so multiple instances can
+      // safely prune disjoint batches if they briefly overlap.
+      fallbackTimer = setInterval(() => { void safePrune() }, 60 * 60 * 1000)
+      fallbackTimer.unref()
+      recoveryTimer = setInterval(() => {
+        void startQueueRetention().catch(() => { /* remain on the visible fallback path */ })
+      }, 30 * 1000)
+      recoveryTimer.unref()
     }
   }
 

@@ -7,8 +7,8 @@ import '../middleware/network'
 import { getHorizonServer } from '../network/clients'
 import { aggregateBookLevels, generateAmmBookLevels, type AmmBookPool, type RawBookLevel } from '../pricing/book'
 import { bookResponseSchema } from '../api/schemas'
-import { apiError } from '../errors'
 
+import { apiError } from '../errors'
 const BookQuerySchema = z.object({
   depth: z.coerce.number().min(0).max(0.5).default(0.1),
   step: z.coerce.number().min(0.001).max(0.1).default(0.01),

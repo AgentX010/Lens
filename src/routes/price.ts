@@ -4,8 +4,10 @@ import { z } from 'zod'
 import { formatValidationError } from '../validation'
 import '../middleware/network'
 import { activeNetwork, type NetworkName } from '../config'
-import { apiError } from '../errors'
+import { findOverlappingGaps } from '../backfill/gaps'
+import { resolveDecimalFormat } from '../utils/decimals'
 
+import { apiError } from '../errors'
 export const TWAP_WINDOW_MIN_MINUTES = 1
 export const TWAP_WINDOW_MAX_MINUTES = 1440
 export const TWAP_WINDOW_DEFAULT_MINUTES = 60
@@ -64,7 +66,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const parsed = TwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send(apiError('invalid_parameter', parsed.error.issues[0].message || 'Invalid parameters'))
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, sampleInterval, method, staleThreshold } = parsed.data
       const network: NetworkName = req.network ?? parsed.data.network ?? activeNetwork
@@ -115,8 +117,8 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       } catch (err) {
         // A driver error message can carry the connection string, and so the
         // Postgres credentials. Log it; never put it in the response body.
-        console.error('[price] TWAP computation failed:', (err as Error).message)
-        return reply.status(500).send(apiError('upstream_unavailable', 'TWAP computation failed'))
+        log.error({ err }, 'TWAP computation failed')
+        return reply.status(500).send(apiError('internal_error', 'TWAP computation failed'))
       }
     }
   )
@@ -141,7 +143,7 @@ export async function registerPriceRoutes(app: FastifyInstance) {
       const { assetA, assetB } = req.params
       const parsed = VwapQuerySchema.safeParse(req.query)
       if (!parsed.success) {
-        return reply.status(400).send(apiError('invalid_parameter', parsed.error.issues[0].message || 'Invalid parameters'))
+        return reply.status(400).send(formatValidationError(parsed.error))
       }
       const { window: windowMinutes, source, method, staleThreshold } = parsed.data
       const decimalFormat = resolveDecimalFormat(req)
@@ -193,8 +195,8 @@ export async function registerPriceRoutes(app: FastifyInstance) {
         }
       } catch (err) {
         // Same as TWAP above: the driver message can contain credentials.
-        console.error('[price] VWAP computation failed:', (err as Error).message)
-        return reply.status(500).send(apiError('upstream_unavailable', 'VWAP computation failed'))
+        log.error({ err }, 'VWAP computation failed')
+        return reply.status(500).send(apiError('internal_error', 'VWAP computation failed'))
       }
     }
   )

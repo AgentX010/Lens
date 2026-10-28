@@ -3,8 +3,8 @@ import { randomBytes } from 'crypto'
 import { prisma } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
 import { resolveNetworkName } from '../middleware/network'
-import { apiError } from '../errors'
 
+import { apiError } from '../errors'
 function isValidHttpsUrl(raw: string): boolean {
   try {
     const u = new URL(raw)

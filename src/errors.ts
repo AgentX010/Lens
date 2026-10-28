@@ -1,3 +1,49 @@
+import { randomUUID } from 'node:crypto'
+import type { FastifyReply, FastifyRequest } from 'fastify'
+
+export const INTERNAL_ERROR_CODE = 'internal_error'
+export const INTERNAL_ERROR_MESSAGE = 'An internal server error occurred.'
+
+export interface InternalErrorResponse {
+  code: typeof INTERNAL_ERROR_CODE
+  message: typeof INTERNAL_ERROR_MESSAGE
+  correlationId: string
+}
+
+export function getCorrelationId(req?: FastifyRequest): string {
+  const headerId = req?.headers?.['x-correlation-id'] || req?.headers?.['x-request-id']
+  if (typeof headerId === 'string' && headerId.length > 0) {
+    return headerId
+  }
+  if (typeof req?.id === 'string' && req.id.length > 0) {
+    return req.id
+  }
+  return randomUUID()
+}
+
+export function createInternalErrorBody(correlationId: string): InternalErrorResponse {
+  return {
+    code: INTERNAL_ERROR_CODE,
+    message: INTERNAL_ERROR_MESSAGE,
+    correlationId,
+  }
+}
+
+export function sendInternalError(
+  reply: FastifyReply,
+  req: FastifyRequest,
+  err: unknown,
+  logMessage = 'Internal server error',
+): FastifyReply {
+  const correlationId = getCorrelationId(req)
+  const log = req?.log ?? reply?.log
+  if (log && typeof log.error === 'function') {
+    log.error({ err, correlationId }, logMessage)
+  }
+
+  return reply.status(500).send(createInternalErrorBody(correlationId))
+}
+
 /**
  * The single, enumerated set of stable machine-readable error codes.
  *
@@ -47,6 +93,41 @@ export const ERROR_CODES = {
   payment_verification_failed: 'payment_verification_failed',
   /** The caller's quota is exhausted and further payment is required. */
   quota_exceeded: 'quota_exceeded',
+
+  // Codes routes already emitted before this set existed. Clients may branch on
+  // them, so they are enumerated as-is rather than renamed.
+  /** Admin surface is disabled because ADMIN_TOKEN is not configured. */
+  admin_not_configured: 'admin_not_configured',
+  /** The X-Admin-Token header was missing or wrong. */
+  admin_unauthorized: 'admin_unauthorized',
+  /** API-key auth: no Authorization header. */
+  missing: 'missing',
+  /** API-key auth: the Authorization header was not a Bearer token. */
+  malformed: 'malformed',
+  /** API-key auth: the key does not exist. */
+  unknown: 'unknown',
+  /** API-key auth: the key has been revoked. */
+  revoked: 'revoked',
+  /** API-key auth: the key has expired. */
+  expired: 'expired',
+  /** API-key auth: the key lacks the scope the route requires. */
+  insufficient_scope: 'insufficient_scope',
+  /** The discovery search database query failed. */
+  discovery_database_unavailable: 'discovery_database_unavailable',
+  /** Zod validation failure from `formatValidationError`. */
+  VALIDATION_ERROR: 'VALIDATION_ERROR',
+  /** A parameter the endpoint recognises but does not support (e.g. screener market cap). */
+  UNSUPPORTED_PARAMETER: 'UNSUPPORTED_PARAMETER',
+  /** /premium: `network` was not testnet or mainnet. */
+  INVALID_NETWORK: 'INVALID_NETWORK',
+  /** /premium: a price input was too old to use. */
+  STALE_DATA: 'STALE_DATA',
+  /** /premium: the on-chain price was not positive. */
+  INVALID_PRICE: 'INVALID_PRICE',
+  /** /premium: an unexpected server-side fault. */
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  /** The database connection pool was exhausted. */
+  DB_POOL_EXHAUSTED: 'DB_POOL_EXHAUSTED',
 } as const
 
 /** A member of {@link ERROR_CODES}. */

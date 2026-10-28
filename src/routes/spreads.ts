@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { pgPool } from '../db'
 import { activeNetwork, type NetworkName } from '../config'
-import { apiError } from '../errors'
+import { sendInternalError, apiError } from '../errors'
 
 // Supported windows → lookback in minutes. A spread is a statement about *now*,
 // so these are deliberately short: widen the window far enough and you stop
@@ -77,31 +77,13 @@ export async function registerSpreadsRoutes(app: FastifyInstance) {
       return reply.status(400).send(apiError('missing_parameter', 'Asset parameter is required'))
     }
 
-    if (!(window in WINDOW_MINUTES)) {
-      return reply
-        .status(400)
-        .send(apiError('bad_window', `window must be one of: ${WINDOWS.join(', ')}`))
-    }
-
-    // Prices from two chains are not comparable, and a spread computed across
-    // both is not a wide spread — it is a meaningless one. Default to this
-    // process's own network rather than silently pooling them.
-    const requested = req.query.network
-    if (requested !== undefined && requested !== 'testnet' && requested !== 'mainnet') {
-      return reply.status(400).send(apiError('bad_network', 'network must be one of: testnet, mainnet'))
-    }
-    const network: NetworkName = (requested as NetworkName) ?? activeNetwork
-
-    const minutes = WINDOW_MINUTES[window as SpreadWindow]
-    const endTime = new Date()
-    const startTime = new Date(endTime.getTime() - minutes * 60 * 1000)
-
     try {
       return await computeSpreads(asset, req.query.window, req.query.network)
     } catch (err) {
-      return reply
-        .status(500)
-        .send(apiError('upstream_unavailable', `Spread aggregation failed: ${(err as Error).message}`))
+      if (err instanceof SpreadsInputError) {
+        return reply.status(400).send(apiError('invalid_parameter', err.message))
+      }
+      return sendInternalError(reply, req, err, 'Spread aggregation failed')
     }
   })
 }

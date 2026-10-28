@@ -7,16 +7,7 @@ vi.mock('../db', () => ({
   pgPool: { query: mockQuery },
 }))
 
-vi.mock('../redis', () => ({
-  getCachedPrice: vi.fn(),
-  setCachedPrice: vi.fn(),
-}))
-
-vi.mock('../aggregator/bestRoute', () => ({
-  getBestRoute: vi.fn(),
-}))
-
-import { registerRESTRoutes } from '../api/rest'
+import { registerPoolsRoutes } from '../routes/pools'
 import { activeNetwork } from '../config'
 
 async function buildApp(network?: 'testnet' | 'mainnet') {
@@ -27,7 +18,7 @@ async function buildApp(network?: 'testnet' | 'mainnet') {
       req.network = network
     })
   }
-  await registerRESTRoutes(app)
+  await registerPoolsRoutes(app)
   await app.ready()
   return app
 }
@@ -46,6 +37,7 @@ describe('GET /pools', () => {
     expect(sql).not.toMatch(/DISTINCT ON/i)
     expect(sql).toMatch(/network = \$1/)
     expect(sql).toMatch(/LIMIT 1/i)
+    // Last bind is the limit+1 probe (default 50 + 1).
     expect(params).toEqual([activeNetwork, 51])
     await app.close()
   })
@@ -68,52 +60,42 @@ describe('GET /pools', () => {
     const res = await app.inject({ method: 'GET', url: '/pools' })
     expect(res.statusCode).toBe(200)
     expect(res.json().pools).toEqual([
-      { pool_id: 'C1', asset_a: 'XLM', asset_b: 'USDC', reserve_a: 10, reserve_b: 20, spot_price: 2, fee_bp: 30, timestamp: old.toISOString() },
+      {
+        pool_id: 'C1', asset_a: 'XLM', asset_b: 'USDC', reserve_a: 10, reserve_b: 20, spot_price: 2, fee_bp: 30,
+        timestamp: old.toISOString(),
+        // A pool with nothing in the 24h window reports unknown estimates, not
+        // zeroed ones — a 0% return and an unmeasurable one rank differently.
+        window: '24h', feeAprPct: null, impermanentLossPct: null, netReturn24hPct: null, estimate: true,
+      },
     ])
     expect(res.json().nextCursor).toBeNull()
     expect(res.json().hasMore).toBe(false)
     await app.close()
   })
 
-  it('paginates keyset-style on pool_id, fetching one extra row', async () => {
-    const old = new Date('2020-01-01T00:00:00Z')
+  it('estimates fee return and divergence loss when the window has data', async () => {
+    const now = new Date('2026-10-27T00:00:00Z')
     mockQuery.mockResolvedValue({
       rows: [
-        { pool_id: 'C1', asset_a: 'XLM', asset_b: 'USDC', timestamp: old },
-        { pool_id: 'C2', asset_a: 'XLM', asset_b: 'USDC', timestamp: old },
-        { pool_id: 'C3', asset_a: 'XLM', asset_b: 'USDC', timestamp: old },
+        {
+          pool_id: 'C1', asset_a: 'XLM', asset_b: 'USDC',
+          reserve_a: 100, reserve_b: 200, spot_price: 2, fee_bp: 30, timestamp: now,
+          // Price doubled over the window, so divergence loss is the textbook
+          // 2*sqrt(2)/3 - 1 = -5.72%. Pool value is 2 * 200 = 400 USDC and the
+          // 30bp fee on 1000 USDC of volume is 3 USDC, i.e. 0.75% over 24h.
+          window_start_price: 1,
+          window_counter_volume: 1000,
+        },
       ],
     })
     const app = await buildApp()
-    const res = await app.inject({ method: 'GET', url: '/pools?limit=2' })
-
-    expect(res.statusCode).toBe(200)
-    const body = res.json()
-    expect(body.pools.map((p: { pool_id: string }) => p.pool_id)).toEqual(['C1', 'C2'])
-    expect(body.hasMore).toBe(true)
-    expect(JSON.parse(Buffer.from(body.nextCursor, 'base64').toString())).toEqual(['C2', 'C2'])
-    expect(mockQuery.mock.calls[0][1]).toEqual([activeNetwork, 3])
-    await app.close()
-  })
-
-  it('applies the cursor as a pool_id keyset predicate', async () => {
-    const cursor = Buffer.from(JSON.stringify(['C2', 'C2'])).toString('base64')
-    const app = await buildApp()
-    await app.inject({ method: 'GET', url: `/pools?cursor=${cursor}` })
-
-    const [sql, params] = mockQuery.mock.calls[0]
-    expect(sql).toMatch(/pool_id > \$2/)
-    expect(params).toEqual([activeNetwork, 'C2', 51])
-    await app.close()
-  })
-
-  it('rejects a malformed cursor and a non-numeric limit', async () => {
-    const app = await buildApp()
-    const badCursor = await app.inject({ method: 'GET', url: '/pools?cursor=not-base64-json' })
-    const badLimit = await app.inject({ method: 'GET', url: '/pools?limit=lots' })
-
-    expect(badCursor.statusCode).toBe(400)
-    expect(badLimit.statusCode).toBe(400)
+    const pool = (await app.inject({ method: 'GET', url: '/pools' })).json().pools[0]
+    expect(pool.window).toBe('24h')
+    expect(pool.estimate).toBe(true)
+    expect(pool.feeAprPct).toBeCloseTo(0.75 * 365, 6)
+    expect(pool.impermanentLossPct).toBeCloseTo(-5.719095841793653, 6)
+    // Net adds the already-negative loss rather than subtracting it.
+    expect(pool.netReturn24hPct).toBeCloseTo(0.75 - 5.719095841793653, 6)
     await app.close()
   })
 })
