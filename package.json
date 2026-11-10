@@ -1,7 +1,7 @@
 {
   "name": "lens",
-  "version": "0.2.0",
-  "description": "Unified Stellar price API \u2014 aggregates SDEX + AMM prices",
+  "version": "0.3.0",
+  "description": "Unified Stellar price API — aggregates SDEX + AMM prices",
   "main": "dist/index.js",
   "scripts": {
     "dev": "node init && tsx watch src/index.ts",
